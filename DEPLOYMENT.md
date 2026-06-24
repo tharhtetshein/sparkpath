@@ -119,7 +119,7 @@ The Blueprint supplies:
 
 ```text
 Runtime: Node
-Build command: npm ci && npm run build
+Build command: npm ci --include=dev && npm run build
 Start command: npm start
 Health check: /api/health
 ```

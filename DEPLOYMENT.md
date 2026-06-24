@@ -5,7 +5,7 @@ SparkPath is deployed as a single Node.js web service:
 - The Vite/React frontend is built into `dist/`.
 - `server.ts` serves the frontend and the `/api/jobs`, `/api/youtube`, and `/api/ai` endpoints.
 - `render.yaml` contains the Render service configuration.
-- `GEMINI_API_KEY` remains server-side and is never included in the browser bundle.
+- `OPENAI_API_KEY` remains server-side and is never included in the browser bundle.
 
 ## 1. Test the production build locally
 
@@ -39,13 +39,13 @@ It should return:
 
 Press `Ctrl+C` in PowerShell when finished.
 
-## 2. Create a Gemini API key
+## 2. Create an OpenAI API key
 
-1. Open the Google AI Studio API Keys page:
-   `https://aistudio.google.com/apikey`
+1. Open the OpenAI API Keys page:
+   `https://platform.openai.com/api-keys`
 2. Sign in.
-3. Select **Create API key**.
-4. Use a new authorization key or an appropriately restricted key.
+3. Select **Create new secret key**.
+4. Create a restricted project key when possible.
 5. Copy the key temporarily.
 
 Do not place this key in source code, `render.yaml`, GitHub, screenshots, or chat messages.
@@ -59,9 +59,10 @@ Copy-Item .env.example .env
 Then enter the key in `.env`:
 
 ```text
-GEMINI_API_KEY=your_real_key
-GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/interactions
-GEMINI_MODEL=gemini-3.5-flash
+OPENAI_API_KEY=your_real_key
+OPENAI_API_URL=https://api.openai.com/v1/responses
+OPENAI_MODEL=gpt-5-nano
+OPENAI_MAX_OUTPUT_TOKENS=1800
 ```
 
 The repository's `.gitignore` prevents `.env` from being committed.
@@ -112,7 +113,7 @@ git remote set-url origin https://github.com/YOUR_USERNAME/sparkpath.git
 5. Select the `sparkpath` repository.
 6. Keep the Blueprint path as `render.yaml`.
 7. Render should detect one web service named `sparkpath`.
-8. When Render requests `GEMINI_API_KEY`, paste the Gemini key.
+8. When Render requests `OPENAI_API_KEY`, paste the new OpenAI key.
 9. Select **Deploy Blueprint**.
 
 The Blueprint supplies:
@@ -141,7 +142,7 @@ Verify:
 3. Enter a target role and open **Job search**.
 4. Run a job search and confirm listings appear.
 5. Add profile evidence and generate quests.
-6. Generate an AI resume or quest to confirm the Gemini key works.
+6. Generate an AI resume or quest to confirm the OpenAI key works.
 7. Mark a job as applied, refresh the page, and confirm it remains in the tracker.
 
 ## 6. Deploy future updates
@@ -196,7 +197,7 @@ In Render:
 
 1. Open the SparkPath service.
 2. Open **Environment**.
-3. Confirm `GEMINI_API_KEY` exists.
+3. Confirm `OPENAI_API_KEY` exists.
 4. Confirm there are no spaces or quotation marks around the value.
 5. Save the environment variables.
 6. Manually redeploy the latest commit.
@@ -211,4 +212,4 @@ Free services can sleep when inactive. The first request after inactivity may ta
 
 ### The Render Blueprint already exists
 
-Secrets declared with `sync: false` are requested during initial Blueprint creation. If `GEMINI_API_KEY` is added later, enter it manually in the service's **Environment** settings and redeploy.
+Secrets declared with `sync: false` are requested during initial Blueprint creation. If `OPENAI_API_KEY` is added later, enter it manually in the service's **Environment** settings and redeploy.

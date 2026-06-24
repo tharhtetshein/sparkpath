@@ -184,13 +184,14 @@ export function aiApi(env: Record<string, string>) {
           return;
         }
 
-        const apiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-        const apiUrl = env.GEMINI_API_URL || "https://generativelanguage.googleapis.com/v1beta/interactions";
-        const model = env.GEMINI_MODEL || "gemini-3.5-flash";
+        const apiKey = env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+        const apiUrl = env.OPENAI_API_URL || "https://api.openai.com/v1/responses";
+        const model = env.OPENAI_MODEL || "gpt-5-nano";
+        const maxOutputTokens = positiveInteger(env.OPENAI_MAX_OUTPUT_TOKENS, 1800);
 
         if (!apiKey) {
           response.statusCode = 500;
-          json(response, { error: "GEMINI_API_KEY is missing. Add it to the server environment and restart the service." });
+          json(response, { error: "OPENAI_API_KEY is missing. Add it to the server environment and restart the service." });
           return;
         }
 
@@ -203,18 +204,21 @@ export function aiApi(env: Record<string, string>) {
             return;
           }
 
-          const upstream = await callGeminiProvider(apiUrl, apiKey, {
+          const upstream = await callOpenAiProvider(apiUrl, apiKey, {
             model,
-            input: messagesToGeminiInput(messages),
+            instructions: messagesToOpenAiInstructions(messages),
+            input: messagesToOpenAiInput(messages),
+            max_output_tokens: maxOutputTokens,
+            text: normalizeResponseFormat(body.responseFormat),
           });
 
           if (!upstream.ok) {
             response.statusCode = upstream.status;
-            json(response, { error: geminiErrorMessage(upstream.text, upstream.status) });
+            json(response, { error: openAiErrorMessage(upstream.text, upstream.status) });
             return;
           }
 
-          const content = parseGeminiInteractionContent(upstream.text);
+          const content = parseOpenAiResponseContent(upstream.text);
           json(response, { content });
         } catch (error) {
           response.statusCode = 500;
@@ -223,7 +227,7 @@ export function aiApi(env: Record<string, string>) {
       };
 
   return {
-    name: "gemini-ai-api",
+    name: "openai-api",
     handler,
     configureServer(server: import("vite").ViteDevServer) {
       server.middlewares.use("/api/ai", handler);
@@ -231,9 +235,19 @@ export function aiApi(env: Record<string, string>) {
   };
 }
 
-type GeminiProviderPayload = {
+type OpenAiProviderPayload = {
   model: string;
-  input: GeminiInput;
+  instructions?: string;
+  input: OpenAiInputMessage[];
+  max_output_tokens: number;
+  text?: {
+    format: {
+      type: "json_schema";
+      name: string;
+      strict: true;
+      schema: Record<string, unknown>;
+    };
+  };
 };
 
 type AiProviderResult = {
@@ -242,13 +256,20 @@ type AiProviderResult = {
   text: string;
 };
 
-type GeminiInput = string | Array<{ type: "text"; text: string } | { type: "image"; mime_type: string; data: string }>;
+type OpenAiInputContent =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string; detail: "low" | "high" | "auto" };
 
-async function callGeminiProvider(apiUrl: string, apiKey: string, payload: GeminiProviderPayload): Promise<AiProviderResult> {
+type OpenAiInputMessage = {
+  role: "user";
+  content: OpenAiInputContent[];
+};
+
+async function callOpenAiProvider(apiUrl: string, apiKey: string, payload: OpenAiProviderPayload): Promise<AiProviderResult> {
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
-      "x-goog-api-key": apiKey,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
@@ -681,69 +702,94 @@ function cleanProviderError(error: unknown) {
   return message.replace(/^Error:\s*/i, "").slice(0, 180);
 }
 
-function messagesToGeminiInput(messages: any[]): GeminiInput {
-  const parts = messages.flatMap((message) => {
-    const prefix = message.role === "system" ? "System instruction" : message.role === "assistant" ? "Previous assistant response" : "User";
-    if (typeof message.content === "string") {
-      return [{ type: "text" as const, text: `${prefix}:\n${message.content}` }];
-    }
-    if (!Array.isArray(message.content)) {
-      return [];
-    }
-
-    return message.content.flatMap((part: any) => {
-      if (part?.type === "text") {
-        return [{ type: "text" as const, text: `${prefix}:\n${part.text ?? ""}` }];
-      }
-      if (part?.type === "image_url" && typeof part.image_url?.url === "string") {
-        const image = dataUrlToGeminiImage(part.image_url.url);
-        return image ? [image] : [];
-      }
-      return [];
-    });
-  });
-
-  if (parts.length === 1 && parts[0].type === "text") {
-    return parts[0].text;
-  }
-  return parts.length ? parts : "Respond to the user.";
+function messagesToOpenAiInstructions(messages: any[]) {
+  const instructions = messages
+    .filter((message) => message?.role === "system" && typeof message.content === "string")
+    .map((message) => message.content.trim())
+    .filter(Boolean);
+  return instructions.length ? instructions.join("\n\n") : undefined;
 }
 
-function dataUrlToGeminiImage(dataUrl: string): { type: "image"; mime_type: string; data: string } | null {
-  const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
-  if (!match) return null;
+function messagesToOpenAiInput(messages: any[]): OpenAiInputMessage[] {
+  const content = messages
+    .filter((message) => message?.role !== "system")
+    .flatMap((message) => {
+      const prefix = message?.role === "assistant" ? "Previous assistant response:\n" : "";
+      if (typeof message?.content === "string") {
+        return [{ type: "input_text" as const, text: `${prefix}${message.content}` }];
+      }
+      if (!Array.isArray(message?.content)) return [];
+
+      return message.content.flatMap((part: any) => {
+        if (part?.type === "text" && typeof part.text === "string") {
+          return [{ type: "input_text" as const, text: `${prefix}${part.text}` }];
+        }
+        if (part?.type === "image_url" && typeof part.image_url?.url === "string") {
+          return [{
+            type: "input_image" as const,
+            image_url: part.image_url.url,
+            detail: normalizeImageDetail(part.image_url.detail),
+          }];
+        }
+        return [];
+      });
+    });
+
+  return [{
+    role: "user",
+    content: content.length ? content : [{ type: "input_text", text: "Respond to the user." }],
+  }];
+}
+
+function normalizeImageDetail(detail: unknown): "low" | "high" | "auto" {
+  return detail === "low" || detail === "high" ? detail : "auto";
+}
+
+function normalizeResponseFormat(value: unknown): OpenAiProviderPayload["text"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as { name?: unknown; schema?: unknown };
+  const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || !candidate.schema || typeof candidate.schema !== "object") {
+    return undefined;
+  }
   return {
-    type: "image",
-    mime_type: match[1],
-    data: match[2],
+    format: {
+      type: "json_schema",
+      name,
+      strict: true,
+      schema: candidate.schema as Record<string, unknown>,
+    },
   };
 }
 
-function parseGeminiInteractionContent(raw: string) {
+function parseOpenAiResponseContent(raw: string) {
   const data = JSON.parse(raw);
   if (typeof data.output_text === "string") return data.output_text;
-  if (typeof data.outputText === "string") return data.outputText;
-  if (Array.isArray(data.steps)) {
-    return data.steps
-      .filter((step: any) => step?.type === "model_output")
-      .flatMap((step: any) => Array.isArray(step.content) ? step.content : [])
-      .map((part: any) => part?.text ?? "")
-      .filter(Boolean)
-      .join("\n");
-  }
   if (Array.isArray(data.output)) {
     return data.output
       .flatMap((item: any) => Array.isArray(item.content) ? item.content : [item])
+      .filter((item: any) => item?.type === "output_text" || typeof item?.text === "string")
       .map((item: any) => item.text ?? "")
       .filter(Boolean)
       .join("\n");
   }
-  return "";
+  throw new Error("OpenAI returned no text content.");
 }
 
-function geminiErrorMessage(raw: string, status: number) {
-  const cleaned = strip(raw);
-  return cleaned.slice(0, 420) || `Gemini API returned ${status}.`;
+function openAiErrorMessage(raw: string, status: number) {
+  try {
+    const data = JSON.parse(raw);
+    const message = typeof data?.error?.message === "string" ? data.error.message : "";
+    return message.slice(0, 420) || `OpenAI API returned ${status}.`;
+  } catch {
+    const cleaned = strip(raw);
+    return cleaned.slice(0, 420) || `OpenAI API returned ${status}.`;
+  }
+}
+
+function positiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function readJson(request: import("node:http").IncomingMessage): Promise<any> {

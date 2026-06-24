@@ -35,6 +35,8 @@ import {
   JobSearchTarget,
   ProjectRecommendation,
   rankJobs,
+  Skill,
+  SkillGroup,
   StudentInput,
 } from "./lib/agent";
 import { buildApplicationDocx } from "./lib/applicationDoc";
@@ -44,6 +46,7 @@ const STORAGE_KEY = "sparkpath-workspace-v1";
 const PROGRESS_KEY = "sparkpath-project-progress-v1";
 const QUEST_KEY = "sparkpath-ai-quest-board-v1";
 const APPLICATIONS_KEY = "sparkpath-job-applications-v1";
+const SKILL_ANALYSIS_KEY = "sparkpath-ai-skill-analysis-v1";
 
 type View = "home" | "jobs";
 
@@ -130,6 +133,19 @@ type AiMessage = {
   content: AiMessageContent;
 };
 
+type AiResponseFormat = {
+  name: string;
+  schema: Record<string, unknown>;
+};
+
+type SkillAnalysisState = {
+  skills: Skill[];
+  summary: string;
+  confidenceNotes: string[];
+  signature: string;
+  analyzedAt: string;
+};
+
 const initialInput: StudentInput = {
   name: "",
   headline: "",
@@ -145,6 +161,54 @@ const groups = {
   product: "Product",
   security: "Security",
   communication: "Comms",
+};
+
+const skillAnalysisResponseFormat: AiResponseFormat = {
+  name: "student_skill_analysis",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["skills", "summary", "confidenceNotes"],
+    properties: {
+      skills: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name", "group", "score", "terms", "evidence"],
+          properties: {
+            name: { type: "string" },
+            group: {
+              type: "string",
+              enum: ["build", "data", "ai", "product", "security", "communication"],
+            },
+            score: { type: "integer" },
+            terms: {
+              type: "array",
+              items: { type: "string" },
+            },
+            evidence: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["sourceTitle", "quote"],
+                properties: {
+                  sourceTitle: { type: "string" },
+                  quote: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
+      summary: { type: "string" },
+      confidenceNotes: {
+        type: "array",
+        items: { type: "string" },
+      },
+    },
+  },
 };
 
 const questRanks: QuestRank[] = [
@@ -191,6 +255,7 @@ export function App() {
   const [projectProgress, setProjectProgress] = useState<Record<string, ProjectProgress>>(() => loadProjectProgress());
   const [questBoard, setQuestBoard] = useState<QuestBoardState>(() => loadQuestBoard());
   const [applications, setApplications] = useState<JobApplication[]>(() => loadApplications());
+  const [skillAnalysis, setSkillAnalysis] = useState<SkillAnalysisState>(() => loadSkillAnalysis());
   const [manualNote, setManualNote] = useState("");
   const [githubRepo, setGithubRepo] = useState("");
   const [jobQuery, setJobQuery] = useState("");
@@ -199,14 +264,23 @@ export function App() {
   const [providerStatus, setProviderStatus] = useState<ProviderStatus[]>([]);
   const [tailoredResumes, setTailoredResumes] = useState<Record<string, string>>({});
   const [aiBusyJob, setAiBusyJob] = useState("");
+  const [skillAnalysisBusy, setSkillAnalysisBusy] = useState(false);
   const [questBusy, setQuestBusy] = useState(false);
   const [status, setStatus] = useState("Dashboard ready.");
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resumeInputRef = useRef<HTMLInputElement>(null);
   const lastAutoJobSearchRef = useRef("");
+  const lastAutoSkillAnalysisRef = useRef("");
 
-  const result = useMemo(() => analyzeStudent(input), [input]);
+  const quickResult = useMemo(() => analyzeStudent(input), [input]);
+  const currentSkillSignature = useMemo(() => skillProfileSignature(input), [input]);
+  const skillAnalysisCurrent = Boolean(skillAnalysis.signature) && skillAnalysis.signature === currentSkillSignature;
+  const skillAnalysisStale = Boolean(skillAnalysis.signature) && !skillAnalysisCurrent;
+  const result = useMemo(
+    () => skillAnalysisCurrent ? { ...quickResult, skills: skillAnalysis.skills } : quickResult,
+    [quickResult, skillAnalysis.skills, skillAnalysisCurrent],
+  );
   const jobTargets = useMemo(() => inferJobTargets(input, result), [input, result]);
   const currentQuestSignature = useMemo(() => questSignature(input, result), [input, result]);
   const questBoardStale = questBoard.projects.length > 0 && questBoard.signature !== currentQuestSignature;
@@ -244,6 +318,10 @@ export function App() {
   }, [applications]);
 
   useEffect(() => {
+    localStorage.setItem(SKILL_ANALYSIS_KEY, JSON.stringify(skillAnalysis));
+  }, [skillAnalysis]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
       Object.entries(projectProgress)
         .filter(([, progress]) => progress.status === "tracking" && progress.proofUrl)
@@ -260,6 +338,25 @@ export function App() {
     lastAutoJobSearchRef.current = jobSearchSignature;
     void searchJobsFromTargets(jobTargets, true);
   }, [activeView, busy, jobSearchSignature, jobTargets]);
+
+  useEffect(() => {
+    const signature = skillProfileSignature(input);
+    if (
+      !input.sources.length ||
+      skillAnalysisBusy ||
+      skillAnalysis.signature === signature ||
+      lastAutoSkillAnalysisRef.current === signature
+    ) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      lastAutoSkillAnalysisRef.current = signature;
+      void analyzeSkillsWithAi(input, true);
+    }, 700);
+
+    return () => window.clearTimeout(timer);
+  }, [input.sources, skillAnalysisBusy]);
 
   function updateField(field: keyof Pick<StudentInput, "name" | "headline" | "targetRole" | "links">, value: string) {
     setInput((current) => ({ ...current, [field]: value }));
@@ -314,6 +411,55 @@ export function App() {
     });
     setManualNote("");
     setStatus("Added manual evidence.");
+  }
+
+  async function analyzeSkillsWithAi(profile = input, automatic = false) {
+    if (!hasSkillEvidence(profile)) {
+      setStatus("Add a headline, portfolio link, resume, GitHub source, certificate, or evidence note before AI skill analysis.");
+      return;
+    }
+
+    const signature = skillProfileSignature(profile);
+    setSkillAnalysisBusy(true);
+    setStatus(`${automatic ? "Analyzing new evidence" : "Refreshing skills"} with AI...`);
+    try {
+      const content = await askAi([
+        {
+          role: "system",
+          content: [
+            "You are SparkPath's evidence-grounded career skills analyst.",
+            "Identify skills the student has actually demonstrated, not skills merely mentioned in a target job title.",
+            "Every skill must cite an exact sourceTitle from the supplied evidence and a short verbatim quote from that source.",
+            "Do not invent experience, tools, outcomes, credentials, or proficiency.",
+            "Merge overlapping skills and use specific, employer-recognizable names.",
+            "Use these groups only: build, data, ai, product, security, communication.",
+            "Score evidence strength consistently: 35 exposure, 50 guided practice, 65 independent application, 80 repeated delivery or measured impact, 90 advanced repeated impact.",
+            "Prefer 4 to 10 strong skills. Return fewer or zero when evidence is limited.",
+            "The target role is context for relevance only and is never evidence.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: skillAnalysisBrief(profile),
+        },
+      ], skillAnalysisResponseFormat);
+
+      const parsed = parseAiSkillAnalysis(content, profile);
+      setSkillAnalysis({
+        ...parsed,
+        signature,
+        analyzedAt: new Date().toISOString(),
+      });
+      setStatus(
+        parsed.skills.length
+          ? `AI verified ${parsed.skills.length} evidence-backed skill${parsed.skills.length === 1 ? "" : "s"}.`
+          : "AI could not verify skills from the current evidence. Add more detailed project or work examples.",
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "AI skill analysis failed.");
+    } finally {
+      setSkillAnalysisBusy(false);
+    }
   }
 
   async function searchJobs() {
@@ -697,6 +843,10 @@ export function App() {
             <DashboardPage
               input={input}
               result={result}
+              skillAnalysis={skillAnalysis}
+              skillAnalysisBusy={skillAnalysisBusy}
+              skillAnalysisCurrent={skillAnalysisCurrent}
+              skillAnalysisStale={skillAnalysisStale}
               questProjects={questBoard.projects}
               questGeneratedAt={questBoard.createdAt}
               questBoardStale={questBoardStale}
@@ -715,6 +865,7 @@ export function App() {
               onGithubImport={handleGithubImport}
               onAddManualNote={addManualNote}
               onRemoveSource={removeSource}
+              onAnalyzeSkills={() => analyzeSkillsWithAi(input, false)}
               onGenerateQuestBoard={generateQuestBoard}
               onProofChange={updateProjectProof}
               onPhotoProof={addProjectPhotos}
@@ -773,7 +924,7 @@ export function App() {
             <span>{questGame.xp} XP</span>
           </div>
           <div className="rail-status">
-            <span>{busy || questBusy || aiBusyJob ? <Loader2 size={16} className="spin" /> : <BadgeCheck size={16} />}</span>
+            <span>{busy || questBusy || skillAnalysisBusy || aiBusyJob ? <Loader2 size={16} className="spin" /> : <BadgeCheck size={16} />}</span>
             <p>{status}</p>
           </div>
         </aside>
@@ -785,6 +936,10 @@ export function App() {
 function DashboardPage(props: {
   input: StudentInput;
   result: ReturnType<typeof analyzeStudent>;
+  skillAnalysis: SkillAnalysisState;
+  skillAnalysisBusy: boolean;
+  skillAnalysisCurrent: boolean;
+  skillAnalysisStale: boolean;
   questProjects: ProjectRecommendation[];
   questGeneratedAt: string;
   questBoardStale: boolean;
@@ -803,6 +958,7 @@ function DashboardPage(props: {
   onGithubImport: () => void;
   onAddManualNote: () => void;
   onRemoveSource: (id: string) => void;
+  onAnalyzeSkills: () => void;
   onGenerateQuestBoard: () => void;
   onProofChange: (project: ProjectRecommendation, proofUrl: string) => void;
   onPhotoProof: (project: ProjectRecommendation, files: FileList | null) => void;
@@ -813,6 +969,10 @@ function DashboardPage(props: {
   const {
     input,
     result,
+    skillAnalysis,
+    skillAnalysisBusy,
+    skillAnalysisCurrent,
+    skillAnalysisStale,
     questProjects,
     questGeneratedAt,
     questBoardStale,
@@ -831,6 +991,7 @@ function DashboardPage(props: {
     onGithubImport,
     onAddManualNote,
     onRemoveSource,
+    onAnalyzeSkills,
     onGenerateQuestBoard,
     onProofChange,
     onPhotoProof,
@@ -907,7 +1068,30 @@ function DashboardPage(props: {
 
       <section className="analysis-grid" aria-label="AI analysis">
         <article className="panel skills-panel">
-          <div className="section-title"><Network size={20} /><h2>Skill Graph</h2></div>
+          <div className="skill-panel-head">
+            <div className="section-title"><Network size={20} /><h2>AI Skill Graph</h2></div>
+            <div className="skill-analysis-actions">
+              <span className={skillAnalysisCurrent ? "ai-current" : skillAnalysisStale ? "ai-stale" : "quick-scan"}>
+                {skillAnalysisBusy ? "Analyzing evidence" : skillAnalysisCurrent ? "AI verified" : skillAnalysisStale ? "Evidence changed" : "Quick scan"}
+              </span>
+              <button type="button" onClick={onAnalyzeSkills} disabled={skillAnalysisBusy || !hasSkillEvidence(input)}>
+                {skillAnalysisBusy ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
+                {skillAnalysisCurrent ? "Refresh analysis" : "Analyze with AI"}
+              </button>
+            </div>
+          </div>
+          {skillAnalysisCurrent && skillAnalysis.summary && (
+            <div className="skill-analysis-summary">
+              <strong>AI assessment</strong>
+              <p>{skillAnalysis.summary}</p>
+              {!!skillAnalysis.confidenceNotes.length && (
+                <ul>{skillAnalysis.confidenceNotes.map((note) => <li key={note}>{note}</li>)}</ul>
+              )}
+            </div>
+          )}
+          {skillAnalysisStale && (
+            <p className="skill-analysis-notice">The evidence or profile changed. Refresh the AI analysis before relying on these matches.</p>
+          )}
           {result.skills.length ? (
             <div className="skill-list">
               {result.skills.map((skill) => (
@@ -915,7 +1099,10 @@ function DashboardPage(props: {
                   <div>
                     <span>{groups[skill.group]}</span>
                     <strong>{skill.name}</strong>
-                    <small>{skill.evidence[0]?.quote ?? skill.terms.join(", ")}</small>
+                    <small>
+                      {skill.evidence[0]?.quote ?? skill.terms.join(", ")}
+                      {skill.evidence[0]?.sourceTitle ? ` — ${skill.evidence[0].sourceTitle}` : ""}
+                    </small>
                   </div>
                   <div className="skill-meter" aria-label={`${skill.name} strength`}>
                     <i style={{ width: `${skill.score}%` }} />
@@ -924,7 +1111,7 @@ function DashboardPage(props: {
                 </article>
               ))}
             </div>
-          ) : <p className="empty">Import GitHub, resume files, or notes to generate skills.</p>}
+          ) : <p className="empty">Import GitHub, resume files, or detailed evidence notes to generate verified skills.</p>}
         </article>
 
         <article className="panel source-panel">
@@ -1228,11 +1415,11 @@ function JobsPage(props: {
   );
 }
 
-async function askAi(messages: AiMessage[]) {
+async function askAi(messages: AiMessage[], responseFormat?: AiResponseFormat) {
   const response = await fetch("/api/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, temperature: 0.7 }),
+    body: JSON.stringify({ messages, responseFormat }),
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "AI request failed.");
@@ -1256,6 +1443,112 @@ function profileBrief(input: StudentInput, result: ReturnType<typeof analyzeStud
     `Detected skills:\n${skills || "No skills detected yet."}`,
     `Evidence sources:\n${sources || "No imported evidence yet."}`,
   ].join("\n\n");
+}
+
+function skillAnalysisBrief(input: StudentInput) {
+  const sources = skillEvidenceSources(input);
+  let remainingCharacters = 24000;
+  const evidence = sources.flatMap((source, index) => {
+    if (remainingCharacters <= 0) return [];
+    const excerpt = source.content.slice(0, Math.min(5000, remainingCharacters));
+    remainingCharacters -= excerpt.length;
+    return [[
+      `SOURCE ${index + 1}`,
+      `sourceTitle: ${source.title}`,
+      "content:",
+      excerpt,
+    ].join("\n")];
+  }).join("\n\n---\n\n");
+
+  return [
+    "Analyze the student's demonstrated skills from the evidence below.",
+    `Student name: ${input.name || "Not provided"}`,
+    `Target role (context only, not evidence): ${input.targetRole || "Not provided"}`,
+    "",
+    "Use sourceTitle exactly as written. Quotes must be copied from the matching source content.",
+    "If the evidence only names a skill without showing use, keep its score low or omit it.",
+    "",
+    evidence || "No usable evidence was supplied.",
+  ].join("\n");
+}
+
+function parseAiSkillAnalysis(content: string, input: StudentInput): Pick<SkillAnalysisState, "skills" | "summary" | "confidenceNotes"> {
+  const parsed = JSON.parse(extractJson(content));
+  const sources = skillEvidenceSources(input);
+  const groupsAllowed = new Set<SkillGroup>(["build", "data", "ai", "product", "security", "communication"]);
+  const seen = new Set<string>();
+  const skills = (Array.isArray(parsed.skills) ? parsed.skills : [])
+    .map((candidate: any): Skill | null => {
+      const name = cleanText(candidate?.name, 80);
+      const group = candidate?.group as SkillGroup;
+      const score = Math.max(0, Math.min(100, Math.round(Number(candidate?.score ?? 0))));
+      const key = name.toLowerCase();
+      if (!name || seen.has(key) || !groupsAllowed.has(group) || !Number.isFinite(score)) return null;
+
+      const evidence = (Array.isArray(candidate?.evidence) ? candidate.evidence : [])
+        .map((item: any) => verifySkillEvidence(item, sources))
+        .filter((item: Skill["evidence"][number] | null): item is Skill["evidence"][number] => Boolean(item))
+        .slice(0, 3);
+      if (!evidence.length) return null;
+
+      const terms = (Array.isArray(candidate?.terms) ? candidate.terms : [])
+        .map((term: unknown) => cleanText(term, 40).toLowerCase())
+        .filter(Boolean)
+        .filter((term: string, index: number, all: string[]) => all.indexOf(term) === index)
+        .slice(0, 6);
+
+      seen.add(key);
+      return {
+        name,
+        group,
+        score,
+        terms: terms.length ? terms : [name.toLowerCase()],
+        evidence,
+      };
+    })
+    .filter((skill: Skill | null): skill is Skill => Boolean(skill))
+    .sort((left: Skill, right: Skill) => right.score - left.score)
+    .slice(0, 10);
+
+  return {
+    skills,
+    summary: cleanText(parsed.summary, 360),
+    confidenceNotes: (Array.isArray(parsed.confidenceNotes) ? parsed.confidenceNotes : [])
+      .map((note: unknown) => cleanText(note, 180))
+      .filter(Boolean)
+      .slice(0, 3),
+  };
+}
+
+function verifySkillEvidence(
+  candidate: any,
+  sources: Array<{ title: string; content: string }>,
+): Skill["evidence"][number] | null {
+  const requestedTitle = cleanText(candidate?.sourceTitle, 120);
+  const quote = cleanText(candidate?.quote, 320);
+  const source = sources.find((item) => item.title.toLowerCase() === requestedTitle.toLowerCase());
+  if (!source || quote.length < 8) return null;
+
+  const normalizedSource = normalizeEvidenceText(source.content);
+  const normalizedQuote = normalizeEvidenceText(quote);
+  if (!normalizedSource.includes(normalizedQuote)) return null;
+
+  return { sourceTitle: source.title, quote };
+}
+
+function skillEvidenceSources(input: StudentInput) {
+  const sources = input.sources
+    .filter((source) => source.content.trim())
+    .slice(0, 10)
+    .map((source) => ({ title: source.title, content: source.content }));
+  const profileStatement = [input.headline, input.links].filter((value) => value.trim()).join("\n");
+  return profileStatement
+    ? [{ title: "Profile statement and links", content: profileStatement }, ...sources]
+    : sources;
+}
+
+function normalizeEvidenceText(value: string) {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 async function enrichQuestVideos(projects: ProjectRecommendation[]) {
@@ -1368,7 +1661,7 @@ function extractJson(content: string) {
   const withoutFence = content.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
   const start = withoutFence.indexOf("{");
   const end = withoutFence.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) throw new Error("AI did not return JSON for the quest board.");
+  if (start === -1 || end === -1 || end <= start) throw new Error("AI did not return usable structured data.");
   return withoutFence.slice(start, end + 1);
 }
 
@@ -1388,6 +1681,23 @@ function cleanUrl(value: unknown) {
 
 function hasQuestInputs(input: StudentInput) {
   return Boolean(input.name.trim() || input.headline.trim() || input.targetRole.trim() || input.links.trim() || input.sources.length);
+}
+
+function hasSkillEvidence(input: StudentInput) {
+  return Boolean(input.headline.trim() || input.links.trim() || input.sources.some((source) => source.content.trim()));
+}
+
+function skillProfileSignature(input: StudentInput) {
+  return simpleHash(JSON.stringify({
+    headline: input.headline,
+    links: input.links,
+    sources: input.sources.map((source) => ({
+      id: source.id,
+      title: source.title,
+      type: source.type,
+      content: source.content,
+    })),
+  }));
 }
 
 function isTechnicalStudent(input: StudentInput, result: ReturnType<typeof analyzeStudent>) {
@@ -1526,6 +1836,23 @@ function loadApplications(): JobApplication[] {
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
+  }
+}
+
+function loadSkillAnalysis(): SkillAnalysisState {
+  const saved = localStorage.getItem(SKILL_ANALYSIS_KEY);
+  if (!saved) return { skills: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
+  try {
+    const parsed = JSON.parse(saved);
+    return {
+      skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+      summary: typeof parsed.summary === "string" ? parsed.summary : "",
+      confidenceNotes: Array.isArray(parsed.confidenceNotes) ? parsed.confidenceNotes : [],
+      signature: typeof parsed.signature === "string" ? parsed.signature : "",
+      analyzedAt: typeof parsed.analyzedAt === "string" ? parsed.analyzedAt : "",
+    };
+  } catch {
+    return { skills: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
   }
 }
 

@@ -49,11 +49,9 @@ export type StudentInput = {
   sources: EvidenceSource[];
 };
 
-export type SkillGroup = "build" | "data" | "ai" | "product" | "security" | "communication";
-
 export type Skill = {
   name: string;
-  group: SkillGroup;
+  category: string;
   score: number;
   terms: string[];
   evidence: Array<{
@@ -93,29 +91,8 @@ export type AgentResult = {
   portfolioMarkdown: string;
 };
 
-const skillMap: Array<{ terms: string[]; name: string; group: SkillGroup }> = [
-  { terms: ["react", "next", "frontend", "ui", "typescript", "javascript", "css", "html"], name: "Frontend product engineering", group: "build" },
-  { terms: ["python", "fastapi", "flask", "django", "api", "backend", "node", "express"], name: "Backend and API development", group: "build" },
-  { terms: ["sql", "postgres", "database", "analytics", "dashboard", "excel", "pandas", "visualization"], name: "Data analysis and modeling", group: "data" },
-  { terms: ["llm", "openai", "agent", "rag", "embedding", "nlp", "machine learning", "model"], name: "Applied AI systems", group: "ai" },
-  { terms: ["figma", "prototype", "user interview", "ux", "wireframe", "product", "research"], name: "Product discovery and UX", group: "product" },
-  { terms: ["security", "ctf", "pentest", "owasp", "auth", "jwt", "xss", "sqli"], name: "Application security", group: "security" },
-  { terms: ["presentation", "write", "report", "teach", "workshop", "documentation", "stakeholder"], name: "Technical communication", group: "communication" },
-];
-
 export function analyzeStudent(input: StudentInput): AgentResult {
-  const allSources = [
-    sourceFromText("manual-profile", "Headline and links", `${input.headline}\n${input.links}`),
-    ...input.sources,
-  ].filter((source) => source.content.trim());
-
-  const corpus = allSources.map((source) => source.content).join("\n").toLowerCase();
-  const skills = skillMap
-    .map((item) => buildSkill(item, allSources, corpus))
-    .filter((skill) => skill.score >= 35)
-    .sort((a, b) => b.score - a.score);
-
-  const topSkills = skills.slice(0, 3).map((skill) => skill.name);
+  const skills: Skill[] = [];
   const target = input.targetRole || "career opportunities";
   const portfolioMarkdown = buildPortfolioMarkdown(input, skills);
 
@@ -125,7 +102,7 @@ export function analyzeStudent(input: StudentInput): AgentResult {
     proofPortfolio: [
       `Lead with a one-page ${target} portfolio organized by skill evidence.`,
       "Attach source-backed proof: repo links, screenshots, certificates, class artifacts, and short result notes.",
-      `Prioritize proof blocks for ${topSkills.join(", ") || "the strongest detected skills"}.`,
+      "Run AI skill analysis to generate evidence-backed skill cards from the imported sources.",
       "Generate a tailored DOCX application pack for each job before applying.",
     ],
     portfolioMarkdown,
@@ -142,38 +119,23 @@ export function sourceFromText(id: string, title: string, content: string): Evid
   };
 }
 
-function buildSkill(
-  item: { terms: string[]; name: string; group: SkillGroup },
-  sources: EvidenceSource[],
-  corpus: string,
-): Skill {
-  const hits = item.terms.filter((term) => corpus.includes(term));
-  const evidence = sources
-    .flatMap((source) => extractEvidence(source, item.terms).map((quote) => ({ sourceTitle: source.title, quote })))
-    .slice(0, 4);
-  const sourceBreadth = new Set(evidence.map((entry) => entry.sourceTitle)).size;
-  return {
-    name: item.name,
-    group: item.group,
-    score: Math.min(98, hits.length * 10 + evidence.length * 12 + sourceBreadth * 8),
-    terms: hits,
-    evidence,
-  };
+function matchesTerm(text: string, term: string) {
+  const normalizedTerm = term.trim().toLowerCase();
+  if (!normalizedTerm) return false;
+  const normalizedText = text.toLowerCase();
+  if (normalizedTerm.includes(" ")) return normalizedText.includes(normalizedTerm);
+  return new RegExp(`(^|[^a-z0-9+#.])${escapeRegExp(normalizedTerm)}([^a-z0-9+#.]|$)`, "i").test(normalizedText);
 }
 
-function extractEvidence(source: EvidenceSource, terms: string[]) {
-  return source.content
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 12 && terms.some((term) => line.toLowerCase().includes(term)))
-    .slice(0, 3);
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function rankJobs(jobs: JobListing[], skills: Skill[], target: string): RankedJob[] {
   return jobs
     .map((job) => {
       const text = `${job.title} ${job.company} ${job.description}`.toLowerCase();
-      const matchedSkills = skills.filter((skill) => skill.terms.some((term) => text.includes(term.toLowerCase())));
+      const matchedSkills = skills.filter((skill) => skill.terms.some((term) => matchesTerm(text, term)));
       const targetHits = target.toLowerCase().split(/\W+/).filter((word) => word.length > 3 && text.includes(word)).length;
       const score = matchedSkills.reduce((sum, skill) => sum + skill.score, 0) + targetHits * 18;
       const matchLabel: RankedJob["matchLabel"] = score > 150 ? "Strong match" : score > 70 ? "Good match" : "Explore";
@@ -206,7 +168,7 @@ export function inferJobTargets(input: StudentInput, result: AgentResult): JobSe
   const hasGithub = sourceTypes.has("github");
   const hasCertificate = /\b(certificate|certification|certified|credential|diploma|course|coursera|udemy|google career certificate|linkedin learning|edx|certificate of completion)\b/i.test(text);
 
-  if (hasGithub || result.skills.some((skill) => ["build", "data", "ai", "security"].includes(skill.group))) {
+  if (hasGithub || result.skills.length) {
     addSkillTargets(targets, result, hasGithub);
     if (hasGithub && !targets.some((target) => ["github", "skills"].includes(target.source))) {
       targets.push({
@@ -239,26 +201,25 @@ export function inferJobTargets(input: StudentInput, result: AgentResult): JobSe
 }
 
 function addSkillTargets(targets: JobSearchTarget[], result: AgentResult, hasGithub: boolean) {
-  const skillNames = result.skills.map((skill) => skill.name);
-  const hasSkill = (name: string) => skillNames.includes(name);
+  const hasTerm = (...terms: string[]) => result.skills.some((skill) => skill.terms.some((skillTerm) => terms.some((term) => matchesTerm(skillTerm, term) || matchesTerm(term, skillTerm))));
 
-  if (hasSkill("Applied AI systems")) {
+  if (hasTerm("llm", "openai", "agent", "ai-agents", "claude-code", "codex", "machine learning", "model")) {
     targets.push({ title: "AI Engineer Intern", source: hasGithub ? "github" : "skills", confidence: 90, reason: "Matched AI/LLM project evidence." });
     targets.push({ title: "Machine Learning Intern", source: hasGithub ? "github" : "skills", confidence: 82, reason: "Matched model or machine learning evidence." });
   }
-  if (hasSkill("Frontend product engineering")) {
+  if (hasTerm("react", "next.js", "frontend", "typescript", "javascript", "vite")) {
     targets.push({ title: "Frontend Developer Intern", source: hasGithub ? "github" : "skills", confidence: 88, reason: "Matched React, UI, JavaScript, or frontend evidence." });
   }
-  if (hasSkill("Backend and API development")) {
+  if (hasTerm("api", "backend", "node.js", "python", "cli", "package.json")) {
     targets.push({ title: "Backend Developer Intern", source: hasGithub ? "github" : "skills", confidence: 86, reason: "Matched API, backend, Python, Node, or server evidence." });
   }
-  if (hasSkill("Data analysis and modeling")) {
+  if (hasTerm("analytics", "dashboard", "timeline", "pandas", "sql")) {
     targets.push({ title: "Data Analyst Intern", source: "skills", confidence: 86, reason: "Matched analytics, SQL, dashboard, spreadsheet, or modeling evidence." });
   }
-  if (hasSkill("Application security")) {
+  if (hasTerm("security", "privacy", "redaction", "csp", "auth")) {
     targets.push({ title: "Cybersecurity Intern", source: hasGithub ? "github" : "skills", confidence: 84, reason: "Matched security, OWASP, CTF, auth, or vulnerability evidence." });
   }
-  if (hasSkill("Product discovery and UX")) {
+  if (hasTerm("product", "ux", "prototype", "research")) {
     targets.push({ title: "Product Design Intern", source: "skills", confidence: 78, reason: "Matched product, UX, prototype, or user research evidence." });
   }
 }

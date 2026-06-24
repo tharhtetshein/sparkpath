@@ -36,7 +36,6 @@ import {
   ProjectRecommendation,
   rankJobs,
   Skill,
-  SkillGroup,
   StudentInput,
 } from "./lib/agent";
 import { buildApplicationDocx } from "./lib/applicationDoc";
@@ -154,15 +153,6 @@ const initialInput: StudentInput = {
   sources: [],
 };
 
-const groups = {
-  build: "Build",
-  data: "Data",
-  ai: "AI",
-  product: "Product",
-  security: "Security",
-  communication: "Comms",
-};
-
 const skillAnalysisResponseFormat: AiResponseFormat = {
   name: "student_skill_analysis",
   schema: {
@@ -175,13 +165,10 @@ const skillAnalysisResponseFormat: AiResponseFormat = {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["name", "group", "score", "terms", "evidence"],
+          required: ["name", "category", "score", "terms", "evidence"],
           properties: {
             name: { type: "string" },
-            group: {
-              type: "string",
-              enum: ["build", "data", "ai", "product", "security", "communication"],
-            },
+            category: { type: "string" },
             score: { type: "integer" },
             terms: {
               type: "array",
@@ -484,7 +471,8 @@ export function App() {
             "You are SparkPath's evidence-grounded career skills analyst.",
             "Identify skills the student has actually demonstrated, not skills merely mentioned in a target job title.",
             "Every skill must cite an exact sourceTitle from the supplied evidence and a short verbatim quote from that source.",
-            "Create the skill cards yourself. Use specific skill names derived from the repositories and evidence, not generic category labels.",
+            "Create the skill cards and their category labels yourself. Use specific skill names and specific category labels derived from the repositories and evidence.",
+            "Do not reuse a predefined category taxonomy. Invent concise category labels from the evidence.",
             "The skills array is the data source for the visual skill graph. Do not rely on the summary to communicate skills.",
             "Each evidence quote must be an exact contiguous phrase or sentence copied from the matching source content.",
             "If you cannot provide an exact quote for a skill, omit that skill.",
@@ -493,7 +481,7 @@ export function App() {
             "You may cite exact GitHub digest lines such as detected technologies, project files, dependency files, languages by bytes, or recent commit messages.",
             "Do not invent experience, tools, outcomes, credentials, or proficiency.",
             "Merge overlapping skills and use specific, employer-recognizable names such as React dashboard engineering, LLM developer tooling, local-first data visualization, or AI workflow automation when supported by evidence.",
-            "Use these groups only: build, data, ai, product, security, communication.",
+            "Category should be a concise AI-created label based only on the evidence.",
             "Score evidence strength consistently: 35 exposure, 50 guided practice, 65 independent application, 80 repeated delivery or measured impact, 90 advanced repeated impact.",
             "Prefer 4 to 10 strong skills. Return fewer or zero when evidence is limited.",
             "The target role is context for relevance only and is never evidence.",
@@ -517,7 +505,7 @@ export function App() {
         parsed.skills.length
           ? `AI verified ${parsed.skills.length} evidence-backed skill${parsed.skills.length === 1 ? "" : "s"}.`
           : fallbackSkillCount
-            ? `AI returned an assessment without exact-quote skill nodes. Showing ${fallbackSkillCount} repo-derived skill${fallbackSkillCount === 1 ? "" : "s"} from the imported evidence.`
+            ? `AI returned an assessment without exact-quote skill nodes.`
             : "AI could not verify skills from the current evidence. Add more detailed project or work examples.",
       );
     } catch (error) {
@@ -1090,7 +1078,7 @@ function DashboardPage(props: {
           <div className="signal-bars">
             {result.skills.slice(0, 5).map((skill, index) => (
               <i key={skill.name} style={{ "--score": `${Math.max(22, skill.score)}%`, "--delay": `${index * 70}ms` } as CSSProperties}>
-                {groups[skill.group]}
+                {skill.category}
               </i>
             ))}
           </div>
@@ -1163,7 +1151,7 @@ function DashboardPage(props: {
             </div>
           )}
           {skillAnalysisSummaryOnly && (
-            <p className="skill-analysis-notice">AI returned an assessment but no exact-quote skill nodes. Showing the repo-derived skill graph below.</p>
+            <p className="skill-analysis-notice">AI returned an assessment but no exact-quote skill nodes.</p>
           )}
           {skillAnalysisStale && (
             <p className="skill-analysis-notice">The evidence or profile changed. Refresh the AI analysis before relying on these matches.</p>
@@ -1173,7 +1161,7 @@ function DashboardPage(props: {
               {result.skills.map((skill) => (
                 <article className="skill-row" key={skill.name}>
                   <div>
-                    <span>{groups[skill.group]}</span>
+                    <span>{skill.category}</span>
                     <strong>{skill.name}</strong>
                     <small>
                       {skill.evidence[0]?.quote ?? skill.terms.join(", ")}
@@ -1593,15 +1581,14 @@ function skillAnalysisBrief(input: StudentInput) {
 function parseAiSkillAnalysis(content: string, input: StudentInput): Pick<SkillAnalysisState, "skills" | "summary" | "confidenceNotes"> {
   const parsed = parseStructuredJson(content);
   const sources = skillEvidenceSources(input);
-  const groupsAllowed = new Set<SkillGroup>(["build", "data", "ai", "product", "security", "communication"]);
   const seen = new Set<string>();
   const skills = (Array.isArray(parsed.skills) ? parsed.skills : [])
     .map((candidate: any): Skill | null => {
       const name = cleanText(candidate?.name, 80);
-      const group = candidate?.group as SkillGroup;
+      const category = cleanText(candidate?.category, 48);
       const score = Math.max(0, Math.min(100, Math.round(Number(candidate?.score ?? 0))));
       const key = name.toLowerCase();
-      if (!name || seen.has(key) || !groupsAllowed.has(group) || !Number.isFinite(score)) return null;
+      if (!name || !category || seen.has(key) || !Number.isFinite(score)) return null;
 
       const terms = (Array.isArray(candidate?.terms) ? candidate.terms : [])
         .map((term: unknown) => cleanText(term, 40).toLowerCase())
@@ -1619,7 +1606,7 @@ function parseAiSkillAnalysis(content: string, input: StudentInput): Pick<SkillA
       seen.add(key);
       return {
         name,
-        group,
+        category,
         score,
         terms: terms.length ? terms : [name.toLowerCase()],
         evidence,
@@ -1886,9 +1873,9 @@ function skillProfileSignature(input: StudentInput) {
 }
 
 function isTechnicalStudent(input: StudentInput, result: ReturnType<typeof analyzeStudent>) {
-  const technicalSkill = result.skills.some((skill) => ["build", "data", "ai", "security"].includes(skill.group));
-  const profileText = `${input.targetRole} ${input.headline} ${input.links} ${input.sources.map((source) => `${source.title} ${source.content.slice(0, 1200)}`).join(" ")}`;
-  return technicalSkill || /\b(ai|software|developer|engineer|frontend|backend|full stack|data|analytics|cyber|security|computer science|programming|code|cloud|devops|machine learning|python|javascript|typescript|react|sql)\b/i.test(profileText);
+  const skillText = result.skills.map((skill) => `${skill.name} ${skill.category} ${skill.terms.join(" ")}`).join(" ");
+  const profileText = `${input.targetRole} ${input.headline} ${input.links} ${skillText} ${input.sources.map((source) => `${source.title} ${source.content.slice(0, 1200)}`).join(" ")}`;
+  return /\b(ai|software|developer|engineer|frontend|backend|full stack|data|analytics|cyber|security|computer science|programming|code|cloud|devops|machine learning|python|javascript|typescript|react|sql)\b/i.test(profileText);
 }
 
 function questSignature(input: StudentInput, result: ReturnType<typeof analyzeStudent>) {
@@ -1898,7 +1885,7 @@ function questSignature(input: StudentInput, result: ReturnType<typeof analyzeSt
     targetRole: input.targetRole,
     links: input.links,
     sources: input.sources.map((source) => ({ id: source.id, title: source.title, type: source.type, size: source.content.length, sample: source.content.slice(0, 240) })),
-    skills: result.skills.map((skill) => ({ name: skill.name, score: Math.round(skill.score) })),
+    skills: result.skills.map((skill) => ({ name: skill.name, category: skill.category, score: Math.round(skill.score) })),
   }));
 }
 
@@ -2033,6 +2020,9 @@ function loadSkillAnalysis(): SkillAnalysisState {
   if (!saved) return { skills: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
   try {
     const parsed = JSON.parse(saved);
+    if (hasLegacyGenericSkillCards(parsed.skills)) {
+      return { skills: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
+    }
     return {
       skills: Array.isArray(parsed.skills) ? parsed.skills : [],
       summary: typeof parsed.summary === "string" ? parsed.summary : "",
@@ -2043,6 +2033,11 @@ function loadSkillAnalysis(): SkillAnalysisState {
   } catch {
     return { skills: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
   }
+}
+
+function hasLegacyGenericSkillCards(value: unknown) {
+  if (!Array.isArray(value)) return false;
+  return value.some((skill: any) => typeof skill?.group === "string" || typeof skill?.category !== "string");
 }
 
 function formatApplicationDate(date: string) {

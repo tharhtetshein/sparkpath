@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: sparkpath
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_API_URL
+        value: https://generativelanguage.googleapis.com/v1beta/interactions
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash

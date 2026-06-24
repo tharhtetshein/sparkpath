@@ -19,3 +19,5 @@ services:
         value: "1800"
       - key: OPENAI_REASONING_EFFORT
         value: minimal
+      - key: GITHUB_TOKEN
+        sync: false

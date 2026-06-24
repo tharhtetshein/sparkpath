@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv } from "vite";
-import { aiApi, jobSearchApi, youtubeSearchApi } from "./server/api";
+import { aiApi, githubImportApi, jobSearchApi, youtubeSearchApi } from "./server/api";
 
 const rootDirectory = dirname(fileURLToPath(import.meta.url));
 const staticDirectory = resolve(rootDirectory, "dist");
@@ -17,6 +17,7 @@ const runtimeEnv = Object.fromEntries(
 const routes = new Map([
   ["/api/jobs", jobSearchApi().handler],
   ["/api/youtube", youtubeSearchApi().handler],
+  ["/api/github/import", githubImportApi({ ...fileEnv, ...runtimeEnv }).handler],
   ["/api/ai", aiApi({ ...fileEnv, ...runtimeEnv }).handler],
 ]);
 

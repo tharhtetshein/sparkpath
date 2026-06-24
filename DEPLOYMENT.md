@@ -64,6 +64,7 @@ OPENAI_API_URL=https://api.openai.com/v1/responses
 OPENAI_MODEL=gpt-5-nano
 OPENAI_MAX_OUTPUT_TOKENS=1800
 OPENAI_REASONING_EFFORT=minimal
+GITHUB_TOKEN=your_github_token_for_public_repo_reads
 ```
 
 The repository's `.gitignore` prevents `.env` from being committed.
@@ -115,7 +116,8 @@ git remote set-url origin https://github.com/YOUR_USERNAME/sparkpath.git
 6. Keep the Blueprint path as `render.yaml`.
 7. Render should detect one web service named `sparkpath`.
 8. When Render requests `OPENAI_API_KEY`, paste the new OpenAI key.
-9. Select **Deploy Blueprint**.
+9. When Render requests `GITHUB_TOKEN`, paste a GitHub personal access token used only for authenticated public GitHub API reads. It does not need private repo access; it is for reading public repos across GitHub, not only repos owned by your account.
+10. Select **Deploy Blueprint**.
 
 The Blueprint supplies:
 
@@ -203,6 +205,19 @@ In Render:
 5. Save the environment variables.
 6. Manually redeploy the latest commit.
 
+### GitHub import returns 403 for every profile
+
+This usually means GitHub rate-limited unauthenticated API requests. Add a server-side `GITHUB_TOKEN` in Render so SparkPath can make authenticated reads of public repos across GitHub:
+
+1. Create a GitHub fine-grained personal access token.
+2. Do not grant private repository access. A minimal token for public GitHub API reads is enough.
+3. In Render, open the SparkPath service.
+4. Open **Environment**.
+5. Add `GITHUB_TOKEN`.
+6. Save and redeploy.
+
+Do not put `GITHUB_TOKEN` in frontend code. SparkPath reads it only on the Node server.
+
 ### Job providers return no listings
 
 The job endpoint queries multiple third-party providers. A provider can temporarily block, throttle, or change its public response. The app continues using providers that still respond and shows direct provider search links.
@@ -213,4 +228,4 @@ Free services can sleep when inactive. The first request after inactivity may ta
 
 ### The Render Blueprint already exists
 
-Secrets declared with `sync: false` are requested during initial Blueprint creation. If `OPENAI_API_KEY` is added later, enter it manually in the service's **Environment** settings and redeploy.
+Secrets declared with `sync: false` are requested during initial Blueprint creation. If `OPENAI_API_KEY` or `GITHUB_TOKEN` is added later, enter it manually in the service's **Environment** settings and redeploy.

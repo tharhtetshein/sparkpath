@@ -139,6 +139,45 @@ export function youtubeSearchApi() {
   };
 }
 
+export function githubImportApi(env: Record<string, string>) {
+  const handler: ApiHandler = async (request, response) => {
+    if (request.method !== "POST") {
+      response.statusCode = 405;
+      json(response, { error: "POST required." });
+      return;
+    }
+
+    try {
+      const body = await readJson(request);
+      const targetInput = typeof body.target === "string" ? body.target : "";
+      const target = normalizeGithubTarget(targetInput);
+      if (!target.value) {
+        response.statusCode = 400;
+        json(response, { error: "Enter a GitHub profile, repo URL, username, or owner/repo." });
+        return;
+      }
+
+      const token = (env.GITHUB_TOKEN || process.env.GITHUB_TOKEN || "").trim();
+      const source = target.type === "repo"
+        ? await importGithubRepoEvidence(target.value, token)
+        : await importGithubProfileEvidence(target.value, token);
+      json(response, { source });
+    } catch (error) {
+      const status = error instanceof GithubApiError ? error.status : 500;
+      response.statusCode = status;
+      json(response, { error: error instanceof Error ? error.message : "GitHub import failed." });
+    }
+  };
+
+  return {
+    name: "github-import-api",
+    handler,
+    configureServer(server: import("vite").ViteDevServer) {
+      server.middlewares.use("/api/github/import", handler);
+    },
+  };
+}
+
 type VerifiedYoutubeVideo = {
   id: string;
   title: string;
@@ -285,6 +324,503 @@ async function callOpenAiProvider(apiUrl: string, apiKey: string, payload: OpenA
     status: response.status,
     text: await response.text(),
   };
+}
+
+type GithubEvidenceSource = {
+  id: string;
+  type: "github";
+  title: string;
+  content: string;
+  url?: string;
+  createdAt: string;
+};
+
+type GithubTarget = {
+  type: "repo" | "user";
+  value: string;
+};
+
+type GithubRepo = {
+  full_name: string;
+  name: string;
+  description?: string | null;
+  language?: string | null;
+  stargazers_count?: number;
+  forks_count?: number;
+  open_issues_count?: number;
+  topics?: string[];
+  html_url: string;
+  default_branch?: string;
+  pushed_at?: string;
+  updated_at?: string;
+  fork?: boolean;
+  archived?: boolean;
+};
+
+type GithubUser = {
+  login: string;
+  name?: string | null;
+  bio?: string | null;
+  public_repos?: number;
+  followers?: number;
+  html_url: string;
+};
+
+type GithubFile = {
+  path: string;
+  content: string;
+};
+
+type GithubRepoEvidence = {
+  digest: string;
+  detail: string;
+  technologies: string[];
+};
+
+type GithubPageResult<T> = {
+  items: T[];
+  truncated: boolean;
+};
+
+const githubProfileDetailRepoLimit = 10;
+const githubProfileRepoPageLimit = 5;
+
+class GithubApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function importGithubRepoEvidence(repo: string, token: string): Promise<GithubEvidenceSource> {
+  const repoJson = await githubJson<GithubRepo>(`https://api.github.com/repos/${repo}`, token, repo);
+  const evidence = await buildGithubRepoEvidence(repoJson, token, {
+    readmeLimit: 14000,
+    maxManifestFiles: 6,
+    maxSourceFiles: 4,
+  });
+
+  return {
+    id: crypto.randomUUID(),
+    type: "github",
+    title: repoJson.full_name,
+    url: repoJson.html_url,
+    createdAt: new Date().toISOString(),
+    content: [
+      "GitHub evidence digest:",
+      evidence.digest,
+      "",
+      "Detailed repository evidence:",
+      evidence.detail,
+    ].join("\n"),
+  };
+}
+
+async function importGithubProfileEvidence(username: string, token: string): Promise<GithubEvidenceSource> {
+  const [user, repoPages] = await Promise.all([
+    githubJson<GithubUser>(`https://api.github.com/users/${username}`, token, `user ${username}`),
+    githubPagedJson<GithubRepo>(
+      `https://api.github.com/users/${username}/repos?sort=updated&per_page=100`,
+      token,
+      `repos for ${username}`,
+      githubProfileRepoPageLimit,
+    ),
+  ]);
+  const repos = repoPages.items;
+  const selectedRepos = selectGithubProfileRepos(repos).slice(0, githubProfileDetailRepoLimit);
+  const repoEvidenceResults = await Promise.allSettled(
+    selectedRepos.map((repo) => buildGithubRepoEvidence(repo, token, {
+      readmeLimit: 5200,
+      maxManifestFiles: 3,
+      maxSourceFiles: 1,
+    })),
+  );
+  const repoEvidence = repoEvidenceResults
+    .filter((result): result is PromiseFulfilledResult<GithubRepoEvidence> => result.status === "fulfilled")
+    .map((result) => result.value);
+  const technologies = unique(repoEvidence.flatMap((item) => item.technologies)).slice(0, 18);
+
+  return {
+    id: crypto.randomUUID(),
+    type: "github",
+    title: `${user.login} GitHub profile`,
+    url: user.html_url,
+    createdAt: new Date().toISOString(),
+    content: [
+      "GitHub profile evidence digest:",
+      `GitHub profile: ${user.name ?? user.login}`,
+      `Username: ${user.login}`,
+      `Bio: ${user.bio ?? "No bio"}`,
+      `Public repos: ${user.public_repos ?? 0}`,
+      `Imported detailed repositories for AI skill analysis: ${selectedRepos.map((repo) => repo.full_name).join(", ") || "None"}`,
+      `Detected technologies across imported repos: ${technologies.join(", ") || "Not enough public repository metadata"}`,
+      "",
+      repoEvidence.map((item) => item.digest).join("\n"),
+      "",
+      "Public repository inventory:",
+      formatGithubRepoInventory(repos, user.public_repos, repoPages.truncated),
+      "",
+      "Detailed repository evidence:",
+      repoEvidence.map((item) => item.detail).join("\n\n---\n\n"),
+    ].filter(Boolean).join("\n"),
+  };
+}
+
+async function buildGithubRepoEvidence(
+  repo: GithubRepo,
+  token: string,
+  options: { readmeLimit: number; maxManifestFiles: number; maxSourceFiles: number },
+): Promise<GithubRepoEvidence> {
+  const branch = repo.default_branch || "main";
+  const [languages, readme, treePaths, commits] = await Promise.all([
+    githubJson<Record<string, number>>(`https://api.github.com/repos/${repo.full_name}/languages`, token, `${repo.full_name} languages`).catch(() => ({})),
+    githubRaw(repo.full_name, "readme", branch, token).catch(() => ""),
+    githubTree(repo.full_name, branch, token).catch(() => []),
+    githubJson<Array<{ commit?: { message?: string } }>>(`https://api.github.com/repos/${repo.full_name}/commits?sha=${encodeURIComponent(branch)}&per_page=5`, token, `${repo.full_name} commits`).catch(() => []),
+  ]);
+  const manifestPaths = selectGithubManifestPaths(treePaths).slice(0, options.maxManifestFiles);
+  const sourcePaths = selectGithubSourcePaths(treePaths, manifestPaths).slice(0, options.maxSourceFiles);
+  const [manifestFiles, sourceFiles] = await Promise.all([
+    githubFiles(repo.full_name, branch, manifestPaths, token, 4200),
+    githubFiles(repo.full_name, branch, sourcePaths, token, 1600),
+  ]);
+  const technologies = detectGithubTechnologies(repo, languages, treePaths, manifestFiles, readme);
+  const fileMap = summarizeGithubFileMap(treePaths);
+  const readmeSummary = summarizeGithubReadme(readme);
+  const commitLines = commits
+    .map((item) => cleanGithubText(item.commit?.message ?? "").split("\n")[0])
+    .filter(Boolean)
+    .slice(0, 5);
+  const digest = [
+    `Repository evidence: ${repo.full_name}`,
+    `Repository ${repo.full_name} description: ${repo.description || "No description"}`,
+    `Repository ${repo.full_name} primary language: ${repo.language || "Not listed"}`,
+    `Repository ${repo.full_name} languages by bytes: ${formatGithubLanguages(languages)}`,
+    `Repository ${repo.full_name} detected technologies: ${technologies.join(", ") || "Not enough technology signals"}`,
+    readmeSummary ? `Repository ${repo.full_name} README says: ${readmeSummary}` : `Repository ${repo.full_name} README: unavailable`,
+    `Repository ${repo.full_name} topics: ${(repo.topics ?? []).join(", ") || "No topics"}`,
+    `Repository ${repo.full_name} project files include: ${fileMap.featuredPaths.join(", ") || "No file map available"}`,
+    manifestPaths.length ? `Repository ${repo.full_name} dependency or config files include: ${manifestPaths.join(", ")}` : "",
+    commitLines.length ? `Repository ${repo.full_name} recent commit messages include: ${commitLines.join(" | ")}` : "",
+  ].filter(Boolean).join("\n");
+  const detail = [
+    digest,
+    "",
+    `Repository URL: ${repo.html_url}`,
+    `Stars: ${repo.stargazers_count ?? 0}`,
+    `Forks: ${repo.forks_count ?? 0}`,
+    `Open issues: ${repo.open_issues_count ?? 0}`,
+    `Last pushed: ${repo.pushed_at ?? "Not listed"}`,
+    `File type counts: ${fileMap.extensionSummary || "No source file counts available"}`,
+    manifestFiles.length ? `Dependency and configuration excerpts:\n${formatGithubFileExcerpts(manifestFiles)}` : "",
+    sourceFiles.length ? `Representative source file excerpts:\n${formatGithubFileExcerpts(sourceFiles)}` : "",
+    readme ? `README excerpt:\n${cleanGithubText(readme).slice(0, options.readmeLimit)}` : "README unavailable.",
+  ].filter(Boolean).join("\n");
+
+  return { digest, detail, technologies };
+}
+
+async function githubJson<T>(url: string, token: string, label: string): Promise<T> {
+  const { data } = await githubJsonWithResponse<T>(url, token, label);
+  return data;
+}
+
+async function githubJsonWithResponse<T>(url: string, token: string, label: string): Promise<{ data: T; response: Response }> {
+  const response = await fetch(url, { headers: githubHeaders(token) });
+  if (!response.ok) throw await githubError(response, label);
+  return { data: await response.json() as T, response };
+}
+
+async function githubPagedJson<T>(url: string, token: string, label: string, maxPages: number): Promise<GithubPageResult<T>> {
+  const items: T[] = [];
+  let truncated = false;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const pageUrl = `${url}${url.includes("?") ? "&" : "?"}page=${page}`;
+    const { data, response } = await githubJsonWithResponse<T[]>(pageUrl, token, `${label} page ${page}`);
+    items.push(...data);
+
+    const hasNextPage = /rel="next"/i.test(response.headers.get("link") ?? "");
+    if (!hasNextPage) return { items, truncated };
+    truncated = page === maxPages;
+  }
+
+  return { items, truncated };
+}
+
+async function githubRaw(fullName: string, path: string, branch: string, token: string): Promise<string> {
+  const url = path === "readme"
+    ? `https://api.github.com/repos/${fullName}/readme`
+    : `https://api.github.com/repos/${fullName}/contents/${encodeGithubPath(path)}?ref=${encodeURIComponent(branch)}`;
+  const response = await fetch(url, { headers: githubHeaders(token, "application/vnd.github.raw") });
+  if (!response.ok) throw await githubError(response, `${fullName}/${path}`);
+  return response.text();
+}
+
+async function githubTree(fullName: string, branch: string, token: string): Promise<string[]> {
+  const data = await githubJson<{ tree?: Array<{ path?: string; type?: string }> }>(
+    `https://api.github.com/repos/${fullName}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+    token,
+    `${fullName} file tree`,
+  );
+  return (data.tree ?? [])
+    .filter((item) => item.type === "blob" && item.path)
+    .map((item) => item.path as string)
+    .filter((path) => !isGeneratedOrVendorPath(path))
+    .slice(0, 650);
+}
+
+async function githubFiles(fullName: string, branch: string, paths: string[], token: string, limit: number): Promise<GithubFile[]> {
+  const results = await Promise.allSettled(
+    paths.map(async (path) => ({
+      path,
+      content: cleanGithubText(await githubRaw(fullName, path, branch, token)).slice(0, limit),
+    })),
+  );
+  return results
+    .filter((result): result is PromiseFulfilledResult<GithubFile> => result.status === "fulfilled")
+    .map((result) => result.value)
+    .filter((file) => file.content.trim());
+}
+
+function githubHeaders(token: string, accept = "application/vnd.github+json") {
+  return {
+    Accept: accept,
+    "User-Agent": "SparkPath/1.0",
+    "X-GitHub-Api-Version": "2022-11-28",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function githubError(response: Response, label: string) {
+  const body = await response.json().catch(() => ({}));
+  const message = typeof body.message === "string" ? body.message : "";
+  const remaining = response.headers.get("x-ratelimit-remaining");
+  const reset = response.headers.get("x-ratelimit-reset");
+  const resetText = reset ? ` Reset: ${new Date(Number(reset) * 1000).toLocaleString()}.` : "";
+
+  if (response.status === 403 && (remaining === "0" || /rate limit/i.test(message))) {
+    return new GithubApiError(
+      429,
+      `GitHub API rate limit exceeded while reading ${label}.${resetText} Add GITHUB_TOKEN in Render/local .env and redeploy, or wait for the limit to reset.`,
+    );
+  }
+  if (response.status === 404) {
+    return new GithubApiError(404, `GitHub could not find ${label}. Check that the profile or repo is public and spelled correctly.`);
+  }
+  if (response.status === 401) {
+    return new GithubApiError(401, "GitHub token was rejected. Replace GITHUB_TOKEN with a valid fine-grained token that can read public repositories.");
+  }
+  if (response.status === 403) {
+    return new GithubApiError(403, `GitHub denied access while reading ${label}. ${message || "If this keeps happening, add or replace GITHUB_TOKEN."}`);
+  }
+  return new GithubApiError(response.status, `GitHub returned ${response.status} while reading ${label}. ${message}`);
+}
+
+function normalizeGithubTarget(input: string): GithubTarget {
+  const trimmed = input.trim();
+  const githubMatch = trimmed.match(/github\.com\/([^/\s#?]+)(?:\/([^/\s#?]+))?/i);
+  if (githubMatch?.[2]) {
+    return { type: "repo", value: `${githubMatch[1]}/${githubMatch[2].replace(/\.git$/, "")}` };
+  }
+  if (githubMatch?.[1]) return { type: "user", value: githubMatch[1] };
+  const shortMatch = trimmed.match(/^([^/\s]+)\/([^/\s]+)$/);
+  if (shortMatch) return { type: "repo", value: `${shortMatch[1]}/${shortMatch[2].replace(/\.git$/, "")}` };
+  const usernameMatch = trimmed.match(/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i);
+  return usernameMatch ? { type: "user", value: trimmed } : { type: "user", value: "" };
+}
+
+function selectGithubProfileRepos(repos: GithubRepo[]) {
+  const usable = repos.filter((repo) => !repo.archived);
+  const nonForks = usable.filter((repo) => !repo.fork);
+  const pool = nonForks.length >= 3 ? nonForks : usable;
+  return [...pool].sort((left, right) => githubRepoEvidenceScore(right) - githubRepoEvidenceScore(left));
+}
+
+function githubRepoEvidenceScore(repo: GithubRepo) {
+  const pushedTime = repo.pushed_at ? new Date(repo.pushed_at).getTime() : 0;
+  const daysSincePush = pushedTime ? Math.max(0, (Date.now() - pushedTime) / 86_400_000) : 3650;
+  const recencyScore = Math.max(0, 120 - daysSincePush);
+  return recencyScore + (repo.stargazers_count ?? 0) * 8 + (repo.description ? 22 : 0) + (repo.language ? 16 : 0) + ((repo.topics ?? []).length * 5) - (repo.fork ? 18 : 0);
+}
+
+function formatGithubRepoInventory(repos: GithubRepo[], publicRepoCount = repos.length, truncated = false) {
+  const sortedRepos = [...repos].sort((left, right) => {
+    const leftTime = left.pushed_at || left.updated_at || "";
+    const rightTime = right.pushed_at || right.updated_at || "";
+    return rightTime.localeCompare(leftTime);
+  });
+  const heading = [
+    `Loaded ${repos.length} of ${publicRepoCount} public repos.`,
+    truncated ? `Repo pagination stopped after ${githubProfileRepoPageLimit} pages to avoid excessive GitHub API usage.` : "",
+  ].filter(Boolean).join(" ");
+  const lines = sortedRepos.map((repo) => {
+    const flags = [repo.fork ? "fork" : "", repo.archived ? "archived" : ""].filter(Boolean).join(", ");
+    const description = truncateGithubText(repo.description || "No description", 150);
+    const topics = truncateGithubText((repo.topics ?? []).join(", ") || "none", 100);
+    return `- ${repo.full_name}${flags ? ` (${flags})` : ""}: ${description}; language ${repo.language || "not listed"}; topics ${topics}; last pushed ${repo.pushed_at ?? "not listed"}`;
+  });
+  return [heading, ...lines].join("\n");
+}
+
+function selectGithubManifestPaths(paths: string[]) {
+  const manifestNames = new Set([
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "environment.yml",
+    "environment.yaml",
+    "setup.py",
+    "go.mod",
+    "Cargo.toml",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "composer.json",
+    "Gemfile",
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "firebase.json",
+    "supabase.toml",
+    "vite.config.ts",
+    "vite.config.js",
+    "next.config.js",
+    "next.config.mjs",
+  ]);
+  return paths
+    .filter((path) => manifestNames.has(path.split("/").pop() ?? "") || /^\.github\/workflows\/[^/]+\.ya?ml$/i.test(path))
+    .sort((left, right) => githubManifestPriority(left) - githubManifestPriority(right));
+}
+
+function selectGithubSourcePaths(paths: string[], manifestPaths: string[]) {
+  const manifestSet = new Set(manifestPaths);
+  return paths
+    .filter((path) => !manifestSet.has(path))
+    .filter((path) => /\.(tsx?|jsx?|py|ipynb|go|rs|java|kt|swift|php|rb|cs)$/i.test(path))
+    .sort((left, right) => githubSourcePriority(left) - githubSourcePriority(right));
+}
+
+function githubManifestPriority(path: string) {
+  const file = path.split("/").pop()?.toLowerCase() ?? "";
+  const order = ["package.json", "pyproject.toml", "requirements.txt", "go.mod", "cargo.toml", "dockerfile"];
+  const index = order.indexOf(file);
+  return (index === -1 ? 99 : index) + path.split("/").length;
+}
+
+function githubSourcePriority(path: string) {
+  const normalized = path.toLowerCase();
+  const preferred = ["src/app.tsx", "src/main.tsx", "app/page.tsx", "pages/index.tsx", "server.ts", "server.js", "main.py", "app.py", "src/main.py", "index.ts", "index.js"];
+  const direct = preferred.indexOf(normalized);
+  if (direct >= 0) return direct;
+  if (/\/(app|main|index|server|route)\.(tsx?|jsx?|py)$/i.test(path)) return 20;
+  if (path.startsWith("src/")) return 35;
+  return 70 + path.split("/").length;
+}
+
+function summarizeGithubFileMap(paths: string[]) {
+  const featuredPaths = paths
+    .filter((path) => /\.(tsx?|jsx?|py|ipynb|go|rs|java|kt|swift|php|rb|cs|html|css|scss|sql|ya?ml|json|toml)$/i.test(path))
+    .slice(0, 42);
+  const counts = new Map<string, number>();
+  paths.forEach((path) => {
+    const extension = path.includes(".") ? path.split(".").pop()?.toLowerCase() ?? "file" : "file";
+    if (extension.length > 8) return;
+    counts.set(extension, (counts.get(extension) ?? 0) + 1);
+  });
+  const extensionSummary = Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 10)
+    .map(([extension, count]) => `${extension}:${count}`)
+    .join(", ");
+  return { featuredPaths, extensionSummary };
+}
+
+function detectGithubTechnologies(repo: GithubRepo, languages: Record<string, number>, paths: string[], files: GithubFile[], readme: string) {
+  const signals = new Set<string>();
+  Object.keys(languages).forEach((language) => signals.add(language));
+  if (repo.language) signals.add(repo.language);
+  (repo.topics ?? []).forEach((topic) => signals.add(topic));
+  const joinedFiles = `${files.map((file) => `${file.path}\n${file.content}`).join("\n")}\n${readme}`.toLowerCase();
+  const pathText = paths.join("\n").toLowerCase();
+  const signalMap: Array<[RegExp, string]> = [
+    [/\breact\b|\.tsx\b|jsx\b/, "React"],
+    [/\bnext\b|next\.config/, "Next.js"],
+    [/\bvite\b|vite\.config/, "Vite"],
+    [/\btypescript\b|\.ts\b|\.tsx\b/, "TypeScript"],
+    [/\bnode\b|\bexpress\b|server\.js|server\.ts/, "Node.js"],
+    [/\bopenai\b|\bllm\b|\brag\b|\bembedding\b/, "AI integration"],
+    [/\bpython\b|\.py\b|requirements\.txt|pyproject\.toml/, "Python"],
+    [/\bpandas\b|\bnumpy\b|\bscikit-learn\b|\bsklearn\b/, "Data science"],
+    [/\bfastapi\b|\bflask\b|\bdjango\b/, "Python web API"],
+    [/\bpytorch\b|\btorch\b|\btensorflow\b|\bkeras\b/, "Machine learning"],
+    [/\bsql\b|postgres|sqlite|mysql|prisma|supabase/, "Databases"],
+    [/\bdocker\b|dockerfile|docker-compose/, "Docker"],
+    [/\.github\/workflows|github actions/, "CI/CD"],
+    [/\bplaywright\b|\bcypress\b|\bjest\b|\bvitest\b/, "Testing"],
+    [/\btailwind\b|shadcn|css\b/, "UI styling"],
+    [/\bunity\b|godot|unreal/, "Game development"],
+    [/\bsolidity\b|hardhat|web3/, "Blockchain"],
+  ];
+  signalMap.forEach(([pattern, label]) => {
+    if (pattern.test(joinedFiles) || pattern.test(pathText)) signals.add(label);
+  });
+  return unique(Array.from(signals).map((value) => cleanGithubText(value)).filter(Boolean)).slice(0, 24);
+}
+
+function formatGithubLanguages(languages: Record<string, number>) {
+  const entries = Object.entries(languages).sort((left, right) => right[1] - left[1]);
+  if (!entries.length) return "No language data";
+  const total = entries.reduce((sum, [, bytes]) => sum + bytes, 0) || 1;
+  return entries.slice(0, 8).map(([language, bytes]) => `${language} ${Math.round((bytes / total) * 100)}%`).join(", ");
+}
+
+function formatGithubFileExcerpts(files: GithubFile[]) {
+  return files.map((file) => `File: ${file.path}\n${file.content}`).join("\n\n");
+}
+
+function summarizeGithubReadme(readme: string) {
+  const lines = cleanGithubText(readme)
+    .split("\n")
+    .map((line) => stripGithubMarkdown(line).trim())
+    .filter((line) => line && !isGithubBadgeOrDecoration(line));
+  return truncateGithubText(lines.slice(0, 6).join(" "), 620);
+}
+
+function stripGithubMarkdown(value: string) {
+  return value
+    .replace(/!\[[^\]]*]\([^)]+\)/g, "")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/[`*_~]/g, "")
+    .replace(/<[^>]+>/g, " ");
+}
+
+function isGithubBadgeOrDecoration(value: string) {
+  return /^[-=*_#\s]+$/.test(value)
+    || /^badge:/i.test(value)
+    || /shields\.io|badgen\.net|github\/workflows|travis-ci|circleci|codecov/i.test(value);
+}
+
+function encodeGithubPath(path: string) {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+function isGeneratedOrVendorPath(path: string) {
+  return /(^|\/)(node_modules|dist|build|coverage|vendor|\.next|\.nuxt|target|bin|obj|__pycache__|\.git)(\/|$)/i.test(path)
+    || /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|mp4|mov|avi|mp3|wav|woff2?|ttf|eot|lock)$/i.test(path);
+}
+
+function cleanGithubText(value: string) {
+  return value.replace(/\r/g, "").replace(/\t/g, "  ").replace(/\n{4,}/g, "\n\n\n").trim();
+}
+
+function truncateGithubText(value: string, maxLength: number) {
+  const cleaned = cleanGithubText(value).replace(/\s+/g, " ");
+  return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 3)}...` : cleaned;
 }
 
 async function searchLinkedIn(query: string, location: string): Promise<Job[]> {

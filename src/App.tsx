@@ -316,7 +316,13 @@ export function App() {
   const currentSkillSignature = useMemo(() => skillProfileSignature(input), [input]);
   const skillAnalysisCurrent = Boolean(skillAnalysis.signature) && skillAnalysis.signature === currentSkillSignature;
   const skillAnalysisStale = Boolean(skillAnalysis.signature) && !skillAnalysisCurrent;
-  const useAiSkillGraph = skillAnalysisCurrent && skillAnalysis.skills.length > 0;
+  const githubEvidencePresent = useMemo(() => hasGithubEvidence(input), [input]);
+  const currentGithubSkillCount = useMemo(
+    () => skillAnalysis.skills.filter((skill) => skill.evidence.some((item) => isGithubEvidenceTitle(input, item.sourceTitle))).length,
+    [input, skillAnalysis.skills],
+  );
+  const skillAnalysisMissingGithub = skillAnalysisCurrent && githubEvidencePresent && skillAnalysis.skills.length > 0 && !currentGithubSkillCount;
+  const useAiSkillGraph = skillAnalysisCurrent && skillAnalysis.skills.length > 0 && !skillAnalysisMissingGithub;
   const skillAnalysisSummaryOnly = skillAnalysisCurrent && !skillAnalysis.skills.length && quickResult.skills.length > 0;
   const result = useMemo(
     () => useAiSkillGraph ? { ...quickResult, skills: skillAnalysis.skills } : quickResult,
@@ -385,7 +391,7 @@ export function App() {
     if (
       !input.sources.length ||
       skillAnalysisBusy ||
-      skillAnalysis.signature === signature ||
+      (skillAnalysis.signature === signature && !skillAnalysisMissingGithub) ||
       lastAutoSkillAnalysisRef.current === signature
     ) {
       return;
@@ -397,7 +403,7 @@ export function App() {
     }, 700);
 
     return () => window.clearTimeout(timer);
-  }, [input.sources, skillAnalysisBusy]);
+  }, [input, skillAnalysis.signature, skillAnalysisBusy, skillAnalysisMissingGithub]);
 
   function updateField(field: keyof Pick<StudentInput, "name" | "headline" | "targetRole" | "links">, value: string) {
     setInput((current) => ({ ...current, [field]: value }));
@@ -495,15 +501,21 @@ export function App() {
       ], skillAnalysisResponseFormat);
 
       const parsed = parseAiSkillAnalysis(content, profile);
+      const githubPresent = hasGithubEvidence(profile);
+      const githubSkillCount = parsed.skills.filter((skill) => skill.evidence.some((item) => isGithubEvidenceTitle(profile, item.sourceTitle))).length;
+      const acceptedSkills = githubPresent && parsed.skills.length && !githubSkillCount ? [] : parsed.skills;
       setSkillAnalysis({
         ...parsed,
+        skills: acceptedSkills,
         signature,
         analyzedAt: new Date().toISOString(),
       });
-      const fallbackSkillCount = parsed.skills.length ? 0 : analyzeStudent(profile).skills.length;
+      const fallbackSkillCount = acceptedSkills.length ? 0 : analyzeStudent(profile).skills.length;
       setStatus(
-        parsed.skills.length
-          ? `AI verified ${parsed.skills.length} evidence-backed skill${parsed.skills.length === 1 ? "" : "s"}.`
+        acceptedSkills.length
+          ? `AI verified ${acceptedSkills.length} evidence-backed skill${acceptedSkills.length === 1 ? "" : "s"}${githubSkillCount ? `, including ${githubSkillCount} from GitHub` : ""}.`
+          : githubPresent && parsed.skills.length && !githubSkillCount
+            ? "AI returned resume-only skills and did not cite GitHub evidence, so the graph was not accepted. Refresh analysis after re-importing GitHub evidence."
           : fallbackSkillCount
             ? `AI returned an assessment without exact-quote skill nodes.`
             : "AI could not verify skills from the current evidence. Add more detailed project or work examples.",
@@ -904,6 +916,7 @@ export function App() {
               skillAnalysisStale={skillAnalysisStale}
               useAiSkillGraph={useAiSkillGraph}
               skillAnalysisSummaryOnly={skillAnalysisSummaryOnly}
+              skillAnalysisMissingGithub={skillAnalysisMissingGithub}
               questProjects={questBoard.projects}
               questGeneratedAt={questBoard.createdAt}
               questBoardStale={questBoardStale}
@@ -999,6 +1012,7 @@ function DashboardPage(props: {
   skillAnalysisStale: boolean;
   useAiSkillGraph: boolean;
   skillAnalysisSummaryOnly: boolean;
+  skillAnalysisMissingGithub: boolean;
   questProjects: ProjectRecommendation[];
   questGeneratedAt: string;
   questBoardStale: boolean;
@@ -1034,6 +1048,7 @@ function DashboardPage(props: {
     skillAnalysisStale,
     useAiSkillGraph,
     skillAnalysisSummaryOnly,
+    skillAnalysisMissingGithub,
     questProjects,
     questGeneratedAt,
     questBoardStale,
@@ -1132,8 +1147,8 @@ function DashboardPage(props: {
           <div className="skill-panel-head">
             <div className="section-title"><Network size={20} /><h2>AI Skill Graph</h2></div>
             <div className="skill-analysis-actions">
-              <span className={useAiSkillGraph ? "ai-current" : skillAnalysisStale ? "ai-stale" : "quick-scan"}>
-                {skillAnalysisBusy ? "Analyzing evidence" : useAiSkillGraph ? "AI verified" : skillAnalysisSummaryOnly ? "AI reviewed" : skillAnalysisStale ? "Evidence changed" : "Quick scan"}
+              <span className={useAiSkillGraph ? "ai-current" : skillAnalysisStale || skillAnalysisMissingGithub ? "ai-stale" : "quick-scan"}>
+                {skillAnalysisBusy ? "Analyzing evidence" : useAiSkillGraph ? "AI verified" : skillAnalysisMissingGithub ? "GitHub not cited" : skillAnalysisSummaryOnly ? "AI reviewed" : skillAnalysisStale ? "Evidence changed" : "Quick scan"}
               </span>
               <button type="button" onClick={onAnalyzeSkills} disabled={skillAnalysisBusy || !hasSkillEvidence(input)}>
                 {skillAnalysisBusy ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
@@ -1152,6 +1167,9 @@ function DashboardPage(props: {
           )}
           {skillAnalysisSummaryOnly && (
             <p className="skill-analysis-notice">AI returned an assessment but no exact-quote skill nodes.</p>
+          )}
+          {skillAnalysisMissingGithub && (
+            <p className="skill-analysis-notice">The saved analysis did not cite GitHub evidence, so it is not being used for the graph. Refresh analysis to generate repository-backed cards.</p>
           )}
           {skillAnalysisStale && (
             <p className="skill-analysis-notice">The evidence or profile changed. Refresh the AI analysis before relying on these matches.</p>
@@ -1512,6 +1530,18 @@ function profileBrief(input: StudentInput, result: ReturnType<typeof analyzeStud
   ].join("\n\n");
 }
 
+function hasGithubEvidence(input: StudentInput) {
+  return input.sources.some((source) => source.type === "github" || isGithubSourceTitle(source.title) || source.content.startsWith("GitHub"));
+}
+
+function isGithubSourceTitle(title: string) {
+  return title.toLowerCase().includes("github");
+}
+
+function isGithubEvidenceTitle(input: StudentInput, title: string) {
+  return input.sources.some((source) => source.title.toLowerCase() === title.toLowerCase() && (source.type === "github" || isGithubSourceTitle(source.title) || source.content.startsWith("GitHub")));
+}
+
 function questProfileBrief(input: StudentInput, result: ReturnType<typeof analyzeStudent>) {
   const skills = result.skills
     .slice(0, 8)
@@ -1548,17 +1578,21 @@ function questProfileBrief(input: StudentInput, result: ReturnType<typeof analyz
 
 function skillAnalysisBrief(input: StudentInput) {
   const sources = skillEvidenceSources(input);
-  let remainingCharacters = 24000;
-  const evidence = sources.flatMap((source, index) => {
+  const githubSources = sources.filter((source) => isGithubSourceTitle(source.title) || source.content.startsWith("GitHub"));
+  const otherSources = sources.filter((source) => !githubSources.includes(source));
+  let remainingCharacters = 42000;
+  const orderedSources = [...githubSources, ...otherSources];
+  const evidence = orderedSources.flatMap((source, index) => {
     if (remainingCharacters <= 0) return [];
-    const sourceLimit = source.title.toLowerCase().includes("github") || source.content.startsWith("GitHub")
-      ? 16000
-      : 5000;
-    const excerpt = source.content.slice(0, Math.min(sourceLimit, remainingCharacters));
+    const isGithub = isGithubSourceTitle(source.title) || source.content.startsWith("GitHub");
+    const sourceLimit = isGithub ? 26000 : 4500;
+    const content = isGithub ? compactGithubEvidence(source.content) : source.content;
+    const excerpt = content.slice(0, Math.min(sourceLimit, remainingCharacters));
     remainingCharacters -= excerpt.length;
     return [[
       `SOURCE ${index + 1}`,
       `sourceTitle: ${source.title}`,
+      `sourceType: ${isGithub ? "github" : "other"}`,
       "content:",
       excerpt,
     ].join("\n")];
@@ -1568,14 +1602,56 @@ function skillAnalysisBrief(input: StudentInput) {
     "Analyze the student's demonstrated skills from the evidence below.",
     `Student name: ${input.name || "Not provided"}`,
     `Target role (context only, not evidence): ${input.targetRole || "Not provided"}`,
+    `GitHub evidence present: ${githubSources.length ? "yes" : "no"}`,
     "",
     "Use sourceTitle exactly as written. Quotes must be copied from the matching source content.",
     "If the evidence only names a skill without showing use, keep its score low or omit it.",
-    "When a source is GitHub evidence, use the imported repository digest, language statistics, dependency/config files, file paths, README excerpts, and commit messages to create skill nodes.",
+    "When GitHub evidence is present, analyze it before resume evidence and create repository-backed skill cards whenever README lines, language statistics, dependency/config files, file paths, source excerpts, or recent commit messages support them.",
+    "Do not return only resume-backed skills when GitHub sources contain repository evidence. If GitHub evidence is present but unusable, state why in confidenceNotes.",
     "For GitHub evidence, quote exact lines from the digest or detailed repository evidence so the app can verify the skill.",
     "",
     evidence || "No usable evidence was supplied.",
   ].join("\n");
+}
+
+function compactGithubEvidence(content: string) {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const priorityPatterns = [
+    /^GitHub (profile )?evidence digest:/i,
+    /^Repository evidence:/i,
+    /^Repository .+ description:/i,
+    /^Repository .+ primary language:/i,
+    /^Repository .+ languages by bytes:/i,
+    /^Repository .+ detected technologies:/i,
+    /^Repository .+ README says:/i,
+    /^Repository .+ topics:/i,
+    /^Repository .+ dependency or config files include:/i,
+    /^Repository .+ recent commit messages include:/i,
+    /^Repository .+ project files include:/i,
+    /^File type counts:/i,
+    /^Dependency and configuration excerpts:/i,
+    /^Representative source file excerpts:/i,
+    /^File: /i,
+    /\b(dependencies|devDependencies|scripts|import|from|export|function|class|interface|type|const|let|async|await)\b/i,
+  ];
+  const selected = unique(lines.filter((line) => priorityPatterns.some((pattern) => pattern.test(line))));
+  const compact = takeLinesWithinBudget(selected.length ? selected : lines, 28000);
+  return compact || content.slice(0, 28000);
+}
+
+function takeLinesWithinBudget(lines: string[], maxCharacters: number) {
+  const selected: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const next = used + line.length + 1;
+    if (next > maxCharacters) break;
+    selected.push(line);
+    used = next;
+  }
+  return selected.join("\n");
 }
 
 function parseAiSkillAnalysis(content: string, input: StudentInput): Pick<SkillAnalysisState, "skills" | "summary" | "confidenceNotes"> {

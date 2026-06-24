@@ -178,53 +178,56 @@ async function verifyYoutubeVideo(id: string): Promise<VerifiedYoutubeVideo | nu
 
 export function aiApi(env: Record<string, string>) {
   const handler: ApiHandler = async (request, response) => {
-        if (request.method !== "POST") {
-          response.statusCode = 405;
-          json(response, { error: "POST required." });
-          return;
-        }
+    if (request.method !== "POST") {
+      response.statusCode = 405;
+      json(response, { error: "POST required." });
+      return;
+    }
 
-        const apiKey = env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
-        const apiUrl = env.OPENAI_API_URL || "https://api.openai.com/v1/responses";
-        const model = env.OPENAI_MODEL || "gpt-5-nano";
-        const maxOutputTokens = positiveInteger(env.OPENAI_MAX_OUTPUT_TOKENS, 1800);
+    const apiKey = env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+    const apiUrl = env.OPENAI_API_URL || "https://api.openai.com/v1/responses";
+    const model = env.OPENAI_MODEL || "gpt-5-nano";
+    const maxOutputTokens = positiveInteger(env.OPENAI_MAX_OUTPUT_TOKENS, 1800);
+    const reasoningEffort = normalizeReasoningEffort(env.OPENAI_REASONING_EFFORT);
 
-        if (!apiKey) {
-          response.statusCode = 500;
-          json(response, { error: "OPENAI_API_KEY is missing. Add it to the server environment and restart the service." });
-          return;
-        }
+    if (!apiKey) {
+      response.statusCode = 500;
+      json(response, { error: "OPENAI_API_KEY is missing. Add it to the server environment and restart the service." });
+      return;
+    }
 
-        try {
-          const body = await readJson(request);
-          const messages = Array.isArray(body.messages) ? body.messages : [];
-          if (!messages.length) {
-            response.statusCode = 400;
-            json(response, { error: "messages[] is required." });
-            return;
-          }
+    try {
+      const body = await readJson(request);
+      const messages = Array.isArray(body.messages) ? body.messages : [];
+      if (!messages.length) {
+        response.statusCode = 400;
+        json(response, { error: "messages[] is required." });
+        return;
+      }
 
-          const upstream = await callOpenAiProvider(apiUrl, apiKey, {
-            model,
-            instructions: messagesToOpenAiInstructions(messages),
-            input: messagesToOpenAiInput(messages),
-            max_output_tokens: maxOutputTokens,
-            text: normalizeResponseFormat(body.responseFormat),
-          });
+      const responseFormat = normalizeResponseFormat(body.responseFormat);
+      const upstream = await callOpenAiProvider(apiUrl, apiKey, {
+        model,
+        instructions: messagesToOpenAiInstructions(messages),
+        input: messagesToOpenAiInput(messages),
+        max_output_tokens: maxOutputTokens,
+        reasoning: { effort: reasoningEffort },
+        ...(responseFormat ? { text: responseFormat } : {}),
+      });
 
-          if (!upstream.ok) {
-            response.statusCode = upstream.status;
-            json(response, { error: openAiErrorMessage(upstream.text, upstream.status) });
-            return;
-          }
+      if (!upstream.ok) {
+        response.statusCode = upstream.status;
+        json(response, { error: openAiErrorMessage(upstream.text, upstream.status) });
+        return;
+      }
 
-          const content = parseOpenAiResponseContent(upstream.text);
-          json(response, { content });
-        } catch (error) {
-          response.statusCode = 500;
-          json(response, { error: error instanceof Error ? error.message : "AI request failed." });
-        }
-      };
+      const content = parseOpenAiResponseContent(upstream.text);
+      json(response, { content });
+    } catch (error) {
+      response.statusCode = 500;
+      json(response, { error: error instanceof Error ? error.message : "AI request failed." });
+    }
+  };
 
   return {
     name: "openai-api",
@@ -240,13 +243,16 @@ type OpenAiProviderPayload = {
   instructions?: string;
   input: OpenAiInputMessage[];
   max_output_tokens: number;
-  text?: {
-    format: {
-      type: "json_schema";
-      name: string;
-      strict: true;
-      schema: Record<string, unknown>;
-    };
+  reasoning?: { effort: "minimal" | "low" | "medium" | "high" };
+  text?: OpenAiTextFormat;
+};
+
+type OpenAiTextFormat = {
+  format: {
+    type: "json_schema";
+    name: string;
+    strict: true;
+    schema: Record<string, unknown>;
   };
 };
 
@@ -745,7 +751,7 @@ function normalizeImageDetail(detail: unknown): "low" | "high" | "auto" {
   return detail === "low" || detail === "high" ? detail : "auto";
 }
 
-function normalizeResponseFormat(value: unknown): OpenAiProviderPayload["text"] | undefined {
+function normalizeResponseFormat(value: unknown): OpenAiTextFormat | undefined {
   if (!value || typeof value !== "object") return undefined;
   const candidate = value as { name?: unknown; schema?: unknown };
   const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
@@ -764,16 +770,12 @@ function normalizeResponseFormat(value: unknown): OpenAiProviderPayload["text"] 
 
 function parseOpenAiResponseContent(raw: string) {
   const data = JSON.parse(raw);
-  if (typeof data.output_text === "string") return data.output_text;
+  if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text;
   if (Array.isArray(data.output)) {
-    return data.output
-      .flatMap((item: any) => Array.isArray(item.content) ? item.content : [item])
-      .filter((item: any) => item?.type === "output_text" || typeof item?.text === "string")
-      .map((item: any) => item.text ?? "")
-      .filter(Boolean)
-      .join("\n");
+    const text = collectOutputText(data.output).join("\n").trim();
+    if (text) return text;
   }
-  throw new Error("OpenAI returned no text content.");
+  throw new Error(openAiEmptyContentMessage(data));
 }
 
 function openAiErrorMessage(raw: string, status: number) {
@@ -790,6 +792,43 @@ function openAiErrorMessage(raw: string, status: number) {
 function positiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeReasoningEffort(value: string | undefined): "minimal" | "low" | "medium" | "high" {
+  return value === "low" || value === "medium" || value === "high" ? value : "minimal";
+}
+
+function collectOutputText(value: unknown): string[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.flatMap(collectOutputText);
+  if (typeof value !== "object") return [];
+
+  const item = value as Record<string, unknown>;
+  const type = typeof item.type === "string" ? item.type : "";
+  const text = typeof item.text === "string" ? item.text : "";
+  const content = item.content;
+
+  return [
+    ...(text && (type === "output_text" || type === "text" || !type) ? [text] : []),
+    ...collectOutputText(content),
+  ];
+}
+
+function openAiEmptyContentMessage(data: any) {
+  const status = typeof data?.status === "string" ? data.status : "unknown";
+  const reason = typeof data?.incomplete_details?.reason === "string" ? data.incomplete_details.reason : "";
+  const outputTypes = Array.isArray(data?.output)
+    ? data.output.map((item: any) => item?.type).filter(Boolean).join(", ")
+    : "";
+  const hint = reason === "max_output_tokens"
+    ? " Increase OPENAI_MAX_OUTPUT_TOKENS or keep OPENAI_REASONING_EFFORT=minimal."
+    : "";
+  return [
+    `OpenAI returned no generated text. Status: ${status}.`,
+    reason ? `Reason: ${reason}.` : "",
+    outputTypes ? `Output item types: ${outputTypes}.` : "",
+    hint,
+  ].filter(Boolean).join(" ");
 }
 
 function readJson(request: import("node:http").IncomingMessage): Promise<any> {

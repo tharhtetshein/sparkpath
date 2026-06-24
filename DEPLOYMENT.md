@@ -63,6 +63,7 @@ OPENAI_API_KEY=your_real_key
 OPENAI_API_URL=https://api.openai.com/v1/responses
 OPENAI_MODEL=gpt-5-nano
 OPENAI_MAX_OUTPUT_TOKENS=1800
+OPENAI_REASONING_EFFORT=minimal
 ```
 
 The repository's `.gitignore` prevents `.env` from being committed.

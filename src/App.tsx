@@ -1423,7 +1423,10 @@ async function askAi(messages: AiMessage[], responseFormat?: AiResponseFormat) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "AI request failed.");
-  return data.content || "No AI content returned.";
+  if (typeof data.content !== "string" || !data.content.trim()) {
+    throw new Error(data.error || "AI request returned no generated content. Try again, or increase OPENAI_MAX_OUTPUT_TOKENS.");
+  }
+  return data.content;
 }
 
 function profileBrief(input: StudentInput, result: ReturnType<typeof analyzeStudent>) {

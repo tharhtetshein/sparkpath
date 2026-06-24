@@ -211,6 +211,58 @@ const skillAnalysisResponseFormat: AiResponseFormat = {
   },
 };
 
+const questBoardResponseFormat: AiResponseFormat = {
+  name: "student_quest_board",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["projects"],
+    properties: {
+      projects: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["title", "why", "deliverables", "proofSignal", "difficulty", "proofMode", "resources"],
+          properties: {
+            title: { type: "string" },
+            why: { type: "string" },
+            deliverables: {
+              type: "array",
+              items: { type: "string" },
+            },
+            proofSignal: { type: "string" },
+            difficulty: {
+              type: "string",
+              enum: ["Weekend", "Two weeks", "Capstone"],
+            },
+            proofMode: {
+              type: "string",
+              enum: ["github", "photo"],
+            },
+            resources: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["label", "url", "kind"],
+                properties: {
+                  label: { type: "string" },
+                  url: { type: "string" },
+                  kind: {
+                    type: "string",
+                    enum: ["video", "doc"],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 const questRanks: QuestRank[] = [
   {
     name: "Starter",
@@ -432,6 +484,7 @@ export function App() {
             "You are SparkPath's evidence-grounded career skills analyst.",
             "Identify skills the student has actually demonstrated, not skills merely mentioned in a target job title.",
             "Every skill must cite an exact sourceTitle from the supplied evidence and a short verbatim quote from that source.",
+            "Create the skill cards yourself. Use specific skill names derived from the repositories and evidence, not generic category labels.",
             "The skills array is the data source for the visual skill graph. Do not rely on the summary to communicate skills.",
             "Each evidence quote must be an exact contiguous phrase or sentence copied from the matching source content.",
             "If you cannot provide an exact quote for a skill, omit that skill.",
@@ -439,7 +492,7 @@ export function App() {
             "GitHub profile bio, stars, followers, or a technology name alone are weak evidence; score those low unless repository files or README text support the skill.",
             "You may cite exact GitHub digest lines such as detected technologies, project files, dependency files, languages by bytes, or recent commit messages.",
             "Do not invent experience, tools, outcomes, credentials, or proficiency.",
-            "Merge overlapping skills and use specific, employer-recognizable names.",
+            "Merge overlapping skills and use specific, employer-recognizable names such as React dashboard engineering, LLM developer tooling, local-first data visualization, or AI workflow automation when supported by evidence.",
             "Use these groups only: build, data, ai, product, security, communication.",
             "Score evidence strength consistently: 35 exposure, 50 guided practice, 65 independent application, 80 repeated delivery or measured impact, 90 advanced repeated impact.",
             "Prefer 4 to 10 strong skills. Return fewer or zero when evidence is limited.",
@@ -607,30 +660,32 @@ export function App() {
           content: [
             "You are SparkPath's quest designer for student career portfolios.",
             "Create practical proof-of-work quests from the student's actual input only.",
+            "You create the full quest cards yourself: title, why, deliverables, proof signal, difficulty, proof mode, and resources.",
+            "Do not reuse generic skill labels, category headings, or prefixed template names as quest titles.",
+            "Quest titles must be specific to the student's GitHub evidence, target role, and gaps.",
             "Do not use generic templates. Do not invent credentials or completed work.",
             "GitHub proofMode is only for technical students or code/data/security/software quests. Otherwise use photo proofMode.",
             "Every quest must include at least one YouTube resource and at least one documentation/article/course resource.",
             "Use exact useful URLs when you know them. If not, use a targeted YouTube search URL or official documentation URL.",
             `Current rank: ${questGame.currentRank.name}. Unlocked reward: ${questGame.currentRank.reward}.`,
             questGame.currentRank.questDirective,
-            "Return strict JSON only. No markdown.",
+            "Return only the structured quest board object.",
           ].join(" "),
         },
         {
           role: "user",
           content: [
             questGame.currentRank.questDirective,
+            `Build quest cards from this profile and evidence. Favor tasks that turn existing GitHub work into stronger ${input.targetRole || "target role"} proof.`,
             "Each quest must have: title, why, deliverables, proofSignal, difficulty, proofMode, resources.",
             "difficulty must be one of: Weekend, Two weeks, Capstone.",
             "proofMode must be one of: github, photo.",
             "resources must contain objects with label, url, kind. kind must be video or doc.",
-            "JSON shape:",
-            "{\"projects\":[{\"title\":\"...\",\"why\":\"...\",\"deliverables\":[\"...\"],\"proofSignal\":\"...\",\"difficulty\":\"Weekend\",\"proofMode\":\"photo\",\"resources\":[{\"label\":\"...\",\"url\":\"https://...\",\"kind\":\"video\"}]}]}",
             "",
-            `Student profile:\n${profileBrief(input, result)}`,
+            `Student profile and evidence:\n${questProfileBrief(input, result)}`,
           ].join("\n"),
         },
-      ]);
+      ], questBoardResponseFormat);
       const projects = parseAiQuestBoard(content, isTechnicalStudent(input, result));
       setStatus("Verifying YouTube videos for generated quests...");
       const verifiedProjects = await enrichQuestVideos(projects);
@@ -1469,6 +1524,40 @@ function profileBrief(input: StudentInput, result: ReturnType<typeof analyzeStud
   ].join("\n\n");
 }
 
+function questProfileBrief(input: StudentInput, result: ReturnType<typeof analyzeStudent>) {
+  const skills = result.skills
+    .slice(0, 8)
+    .map((skill) => `- ${skill.name} (${Math.round(skill.score)}/100): ${skill.evidence[0]?.quote ?? skill.terms.join(", ")}`)
+    .join("\n");
+  let remainingCharacters = 18000;
+  const sources = input.sources
+    .slice(0, 8)
+    .flatMap((source) => {
+      if (remainingCharacters <= 0) return [];
+      const isGithub = source.type === "github" || source.content.startsWith("GitHub");
+      const sourceLimit = isGithub ? 8000 : 3000;
+      const excerpt = source.content.slice(0, Math.min(sourceLimit, remainingCharacters));
+      remainingCharacters -= excerpt.length;
+      return [[
+        `Source: ${source.title}`,
+        `Type: ${source.type}`,
+        excerpt,
+      ].join("\n")];
+    })
+    .join("\n\n---\n\n");
+
+  return [
+    `Name: ${input.name || "Student"}`,
+    `Target role: ${input.targetRole || "Not set"}`,
+    `Headline: ${input.headline || "Not set"}`,
+    `Links: ${input.links || "Not set"}`,
+    "",
+    `Current evidence-derived skills:\n${skills || "No skills detected yet."}`,
+    "",
+    `Evidence sources:\n${sources || "No imported evidence yet."}`,
+  ].join("\n\n");
+}
+
 function skillAnalysisBrief(input: StudentInput) {
   const sources = skillEvidenceSources(input);
   let remainingCharacters = 24000;
@@ -1514,17 +1603,18 @@ function parseAiSkillAnalysis(content: string, input: StudentInput): Pick<SkillA
       const key = name.toLowerCase();
       if (!name || seen.has(key) || !groupsAllowed.has(group) || !Number.isFinite(score)) return null;
 
-      const evidence = (Array.isArray(candidate?.evidence) ? candidate.evidence : [])
-        .map((item: any) => verifySkillEvidence(item, sources))
-        .filter((item: Skill["evidence"][number] | null): item is Skill["evidence"][number] => Boolean(item))
-        .slice(0, 3);
-      if (!evidence.length) return null;
-
       const terms = (Array.isArray(candidate?.terms) ? candidate.terms : [])
         .map((term: unknown) => cleanText(term, 40).toLowerCase())
         .filter(Boolean)
         .filter((term: string, index: number, all: string[]) => all.indexOf(term) === index)
         .slice(0, 6);
+
+      const exactEvidence = (Array.isArray(candidate?.evidence) ? candidate.evidence : [])
+        .map((item: any) => verifySkillEvidence(item, sources))
+        .filter((item: Skill["evidence"][number] | null): item is Skill["evidence"][number] => Boolean(item))
+        .slice(0, 3);
+      const evidence = exactEvidence.length ? exactEvidence : inferAiSkillEvidence(candidate, sources, name, terms);
+      if (!evidence.length) return null;
 
       seen.add(key);
       return {
@@ -1565,6 +1655,61 @@ function verifySkillEvidence(
   return { sourceTitle: source.title, quote };
 }
 
+function inferAiSkillEvidence(
+  candidate: any,
+  sources: Array<{ title: string; content: string }>,
+  skillName: string,
+  terms: string[],
+): Skill["evidence"] {
+  const requestedTitles = (Array.isArray(candidate?.evidence) ? candidate.evidence : [])
+    .map((item: any) => cleanText(item?.sourceTitle, 120).toLowerCase())
+    .filter(Boolean);
+  const candidateQuotes = (Array.isArray(candidate?.evidence) ? candidate.evidence : [])
+    .map((item: any) => cleanText(item?.quote, 220))
+    .filter(Boolean)
+    .join(" ");
+  const pool = requestedTitles.length
+    ? sources.filter((source) => requestedTitles.includes(source.title.toLowerCase()))
+    : sources;
+  const keywords = unique([
+    ...terms,
+    ...skillName.toLowerCase().split(/[^a-z0-9+#.]+/i),
+    ...candidateQuotes.toLowerCase().split(/[^a-z0-9+#.]+/i),
+  ])
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 4)
+    .slice(0, 18);
+
+  return pool
+    .flatMap((source) => sourceEvidenceLines(source.content)
+      .map((line) => ({
+        sourceTitle: source.title,
+        quote: cleanText(line, 320),
+        score: scoreEvidenceLine(line, keywords),
+      })))
+    .filter((item) => item.quote.length >= 8 && item.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 3)
+    .map(({ sourceTitle, quote }) => ({ sourceTitle, quote }));
+}
+
+function sourceEvidenceLines(content: string) {
+  return content
+    .split(/\n+/)
+    .flatMap((line) => line.split(/(?<=[.!?])\s+/))
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 16 && line.length <= 700);
+}
+
+function scoreEvidenceLine(line: string, keywords: string[]) {
+  const lower = line.toLowerCase();
+  const keywordScore = keywords.reduce((score, keyword) => score + (lower.includes(keyword) ? 3 : 0), 0);
+  const githubEvidenceScore = /repository .+ (readme says|recent commit messages include|dependency or config files include|languages by bytes|detected technologies|project files include|description:)/i.test(line)
+    ? 8
+    : 0;
+  return keywordScore + githubEvidenceScore;
+}
+
 function skillEvidenceSources(input: StudentInput) {
   const sources = input.sources
     .filter((source) => source.content.trim())
@@ -1599,7 +1744,7 @@ async function enrichQuestVideos(projects: ProjectRecommendation[]) {
 }
 
 function parseAiQuestBoard(content: string, allowGithubProof: boolean): ProjectRecommendation[] {
-  const parsed = JSON.parse(extractJson(content));
+  const parsed = parseStructuredJson(content);
   const projects = (Array.isArray(parsed.projects) ? parsed.projects : [])
     .map((project: unknown) => normalizeQuestProject(project, allowGithubProof))
     .filter((project: ProjectRecommendation | null): project is ProjectRecommendation => Boolean(project))
@@ -1761,6 +1906,10 @@ function simpleHash(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) hash = Math.imul(31, hash) + value.charCodeAt(index) | 0;
   return String(hash);
+}
+
+function unique<T>(items: T[]) {
+  return Array.from(new Set(items));
 }
 
 function hasNewProgress(baseline: RepoProgressSnapshot, snapshot: RepoProgressSnapshot) {

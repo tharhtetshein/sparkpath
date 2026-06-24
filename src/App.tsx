@@ -430,12 +430,19 @@ export function App() {
             "You are SparkPath's evidence-grounded career skills analyst.",
             "Identify skills the student has actually demonstrated, not skills merely mentioned in a target job title.",
             "Every skill must cite an exact sourceTitle from the supplied evidence and a short verbatim quote from that source.",
+            "The skills array is the data source for the visual skill graph. Do not rely on the summary to communicate skills.",
+            "Each evidence quote must be an exact contiguous phrase or sentence copied from the matching source content.",
+            "If you cannot provide an exact quote for a skill, omit that skill.",
+            "For GitHub evidence, repository language statistics, dependency manifests, config files, file paths, README excerpts, and recent commit messages are valid evidence of demonstrated technical work.",
+            "GitHub profile bio, stars, followers, or a technology name alone are weak evidence; score those low unless repository files or README text support the skill.",
+            "You may cite exact GitHub digest lines such as detected technologies, project files, dependency files, languages by bytes, or recent commit messages.",
             "Do not invent experience, tools, outcomes, credentials, or proficiency.",
             "Merge overlapping skills and use specific, employer-recognizable names.",
             "Use these groups only: build, data, ai, product, security, communication.",
             "Score evidence strength consistently: 35 exposure, 50 guided practice, 65 independent application, 80 repeated delivery or measured impact, 90 advanced repeated impact.",
             "Prefer 4 to 10 strong skills. Return fewer or zero when evidence is limited.",
             "The target role is context for relevance only and is never evidence.",
+            "The summary must describe only skills returned in the skills array. If the array is empty, say the evidence is insufficient for a verified skill graph.",
           ].join(" "),
         },
         {
@@ -1453,7 +1460,10 @@ function skillAnalysisBrief(input: StudentInput) {
   let remainingCharacters = 24000;
   const evidence = sources.flatMap((source, index) => {
     if (remainingCharacters <= 0) return [];
-    const excerpt = source.content.slice(0, Math.min(5000, remainingCharacters));
+    const sourceLimit = source.title.toLowerCase().includes("github") || source.content.startsWith("GitHub")
+      ? 16000
+      : 5000;
+    const excerpt = source.content.slice(0, Math.min(sourceLimit, remainingCharacters));
     remainingCharacters -= excerpt.length;
     return [[
       `SOURCE ${index + 1}`,
@@ -1470,6 +1480,8 @@ function skillAnalysisBrief(input: StudentInput) {
     "",
     "Use sourceTitle exactly as written. Quotes must be copied from the matching source content.",
     "If the evidence only names a skill without showing use, keep its score low or omit it.",
+    "When a source is GitHub evidence, use the imported repository digest, language statistics, dependency/config files, file paths, README excerpts, and commit messages to create skill nodes.",
+    "For GitHub evidence, quote exact lines from the digest or detailed repository evidence so the app can verify the skill.",
     "",
     evidence || "No usable evidence was supplied.",
   ].join("\n");

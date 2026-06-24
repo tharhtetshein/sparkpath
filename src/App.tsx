@@ -1473,7 +1473,7 @@ function skillAnalysisBrief(input: StudentInput) {
 }
 
 function parseAiSkillAnalysis(content: string, input: StudentInput): Pick<SkillAnalysisState, "skills" | "summary" | "confidenceNotes"> {
-  const parsed = JSON.parse(extractJson(content));
+  const parsed = parseStructuredJson(content);
   const sources = skillEvidenceSources(input);
   const groupsAllowed = new Set<SkillGroup>(["build", "data", "ai", "product", "security", "communication"]);
   const seen = new Set<string>();
@@ -1661,8 +1661,19 @@ function extractJson(content: string) {
   const withoutFence = content.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
   const start = withoutFence.indexOf("{");
   const end = withoutFence.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) throw new Error("AI did not return usable structured data.");
+  if (start === -1 || end === -1 || end <= start) {
+    const preview = withoutFence.slice(0, 180);
+    throw new Error(`AI returned text instead of structured skill data. Check that OPENAI_API_KEY is set and the latest deployment is running. Response started with: ${preview || "empty response"}`);
+  }
   return withoutFence.slice(start, end + 1);
+}
+
+function parseStructuredJson(content: string) {
+  try {
+    return JSON.parse(content);
+  } catch {
+    return JSON.parse(extractJson(content));
+  }
 }
 
 function cleanText(value: unknown, maxLength: number) {

@@ -277,9 +277,11 @@ export function App() {
   const currentSkillSignature = useMemo(() => skillProfileSignature(input), [input]);
   const skillAnalysisCurrent = Boolean(skillAnalysis.signature) && skillAnalysis.signature === currentSkillSignature;
   const skillAnalysisStale = Boolean(skillAnalysis.signature) && !skillAnalysisCurrent;
+  const useAiSkillGraph = skillAnalysisCurrent && skillAnalysis.skills.length > 0;
+  const skillAnalysisSummaryOnly = skillAnalysisCurrent && !skillAnalysis.skills.length && quickResult.skills.length > 0;
   const result = useMemo(
-    () => skillAnalysisCurrent ? { ...quickResult, skills: skillAnalysis.skills } : quickResult,
-    [quickResult, skillAnalysis.skills, skillAnalysisCurrent],
+    () => useAiSkillGraph ? { ...quickResult, skills: skillAnalysis.skills } : quickResult,
+    [quickResult, skillAnalysis.skills, useAiSkillGraph],
   );
   const jobTargets = useMemo(() => inferJobTargets(input, result), [input, result]);
   const currentQuestSignature = useMemo(() => questSignature(input, result), [input, result]);
@@ -457,10 +459,13 @@ export function App() {
         signature,
         analyzedAt: new Date().toISOString(),
       });
+      const fallbackSkillCount = parsed.skills.length ? 0 : analyzeStudent(profile).skills.length;
       setStatus(
         parsed.skills.length
           ? `AI verified ${parsed.skills.length} evidence-backed skill${parsed.skills.length === 1 ? "" : "s"}.`
-          : "AI could not verify skills from the current evidence. Add more detailed project or work examples.",
+          : fallbackSkillCount
+            ? `AI returned an assessment without exact-quote skill nodes. Showing ${fallbackSkillCount} repo-derived skill${fallbackSkillCount === 1 ? "" : "s"} from the imported evidence.`
+            : "AI could not verify skills from the current evidence. Add more detailed project or work examples.",
       );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "AI skill analysis failed.");
@@ -854,6 +859,8 @@ export function App() {
               skillAnalysisBusy={skillAnalysisBusy}
               skillAnalysisCurrent={skillAnalysisCurrent}
               skillAnalysisStale={skillAnalysisStale}
+              useAiSkillGraph={useAiSkillGraph}
+              skillAnalysisSummaryOnly={skillAnalysisSummaryOnly}
               questProjects={questBoard.projects}
               questGeneratedAt={questBoard.createdAt}
               questBoardStale={questBoardStale}
@@ -947,6 +954,8 @@ function DashboardPage(props: {
   skillAnalysisBusy: boolean;
   skillAnalysisCurrent: boolean;
   skillAnalysisStale: boolean;
+  useAiSkillGraph: boolean;
+  skillAnalysisSummaryOnly: boolean;
   questProjects: ProjectRecommendation[];
   questGeneratedAt: string;
   questBoardStale: boolean;
@@ -980,6 +989,8 @@ function DashboardPage(props: {
     skillAnalysisBusy,
     skillAnalysisCurrent,
     skillAnalysisStale,
+    useAiSkillGraph,
+    skillAnalysisSummaryOnly,
     questProjects,
     questGeneratedAt,
     questBoardStale,
@@ -1078,8 +1089,8 @@ function DashboardPage(props: {
           <div className="skill-panel-head">
             <div className="section-title"><Network size={20} /><h2>AI Skill Graph</h2></div>
             <div className="skill-analysis-actions">
-              <span className={skillAnalysisCurrent ? "ai-current" : skillAnalysisStale ? "ai-stale" : "quick-scan"}>
-                {skillAnalysisBusy ? "Analyzing evidence" : skillAnalysisCurrent ? "AI verified" : skillAnalysisStale ? "Evidence changed" : "Quick scan"}
+              <span className={useAiSkillGraph ? "ai-current" : skillAnalysisStale ? "ai-stale" : "quick-scan"}>
+                {skillAnalysisBusy ? "Analyzing evidence" : useAiSkillGraph ? "AI verified" : skillAnalysisSummaryOnly ? "AI reviewed" : skillAnalysisStale ? "Evidence changed" : "Quick scan"}
               </span>
               <button type="button" onClick={onAnalyzeSkills} disabled={skillAnalysisBusy || !hasSkillEvidence(input)}>
                 {skillAnalysisBusy ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
@@ -1095,6 +1106,9 @@ function DashboardPage(props: {
                 <ul>{skillAnalysis.confidenceNotes.map((note) => <li key={note}>{note}</li>)}</ul>
               )}
             </div>
+          )}
+          {skillAnalysisSummaryOnly && (
+            <p className="skill-analysis-notice">AI returned an assessment but no exact-quote skill nodes. Showing the repo-derived skill graph below.</p>
           )}
           {skillAnalysisStale && (
             <p className="skill-analysis-notice">The evidence or profile changed. Refresh the AI analysis before relying on these matches.</p>

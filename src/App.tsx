@@ -1871,14 +1871,16 @@ function DashboardPage(props: {
         <article className="panel project-panel">
           <div className="quest-panel-head">
             <div className="section-title"><Target size={20} /><h2>Quest Board</h2></div>
-            <div className="quest-generate-actions">
-              {questBoardStale && <span>Profile changed</span>}
-              {questGeneratedAt && !questBoardStale && <span>AI generated</span>}
-              <button type="button" onClick={onGenerateQuestBoard} disabled={busy || questBusy || !hasQuestInputs(input)}>
-                {questBusy ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
-                {questProjects.length ? "Regenerate quests" : "Generate quests"}
-              </button>
-            </div>
+            {!!questProjects.length && (
+              <div className="quest-generate-actions">
+                {questBoardStale && <span>Profile changed</span>}
+                {questGeneratedAt && !questBoardStale && <span>AI generated</span>}
+                <button type="button" onClick={onGenerateQuestBoard} disabled={busy || questBusy || !hasQuestInputs(input)}>
+                  {questBusy ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
+                  Regenerate quests
+                </button>
+              </div>
+            )}
           </div>
 
           <section className="rank-command-center" aria-label="Quest rank and rewards">

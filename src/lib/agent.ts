@@ -1,4 +1,4 @@
-export type EvidenceSourceType = "manual" | "file" | "github" | "opportunity";
+export type EvidenceSourceType = "manual" | "file" | "github" | "opportunity" | "course" | "quest";
 
 export type EvidenceSource = {
   id: string;

@@ -4,10 +4,16 @@ import {
   ArrowRight,
   Award,
   BadgeCheck,
+  BookMarked,
   BookOpen,
   BriefcaseBusiness,
+  CalendarDays,
   Camera,
+  Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Circle,
   ClipboardList,
   Download,
   ExternalLink,
@@ -15,8 +21,11 @@ import {
   FileUp,
   Gift,
   Github,
+  GraduationCap,
   Home,
+  Library,
   Link2,
+  ListTree,
   Loader2,
   MapPin,
   Network,
@@ -46,8 +55,9 @@ const PROGRESS_KEY = "sparkpath-project-progress-v1";
 const QUEST_KEY = "sparkpath-ai-quest-board-v1";
 const APPLICATIONS_KEY = "sparkpath-job-applications-v1";
 const SKILL_ANALYSIS_KEY = "sparkpath-ai-skill-analysis-v1";
+const COURSES_KEY = "sparkpath-ai-courses-v1";
 
-type View = "home" | "jobs";
+type View = "home" | "courses" | "jobs";
 
 type ProviderStatus = {
   provider: string;
@@ -78,6 +88,7 @@ type ProjectProgress = {
   startedAt?: string;
   checkedAt?: string;
   verifiedAt?: string;
+  activityDates?: string[];
   message?: string;
 };
 
@@ -155,6 +166,54 @@ type SkillAnalysisPartition = {
 
 type CompletedSkillAnalysisPartition = SkillAnalysisPartition & {
   analysis: ParsedSkillAnalysis;
+};
+
+type CourseLevel = "Beginner" | "Intermediate" | "Advanced";
+type CourseDepth = "Quick start" | "Standard" | "Deep dive";
+
+type CourseLessonContent = {
+  introduction: string;
+  sections: Array<{
+    heading: string;
+    body: string;
+  }>;
+  exercise: string;
+  keyTakeaways: string[];
+};
+
+type CourseLesson = {
+  id: string;
+  title: string;
+  summary: string;
+  objectives: string[];
+  estimatedMinutes: number;
+  content?: CourseLessonContent;
+  completedAt?: string;
+};
+
+type CourseModule = {
+  id: string;
+  title: string;
+  description: string;
+  skills: string[];
+  lessons: CourseLesson[];
+};
+
+type GeneratedCourse = {
+  id: string;
+  topic: string;
+  title: string;
+  description: string;
+  level: CourseLevel;
+  depth: CourseDepth;
+  modules: CourseModule[];
+  createdAt: string;
+};
+
+type CourseState = {
+  courses: GeneratedCourse[];
+  activeCourseId: string;
+  activeLessonId: string;
 };
 
 const initialInput: StudentInput = {
@@ -262,6 +321,72 @@ const questBoardResponseFormat: AiResponseFormat = {
   },
 };
 
+const courseOutlineResponseFormat: AiResponseFormat = {
+  name: "generated_learning_course",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["title", "description", "modules"],
+    properties: {
+      title: { type: "string" },
+      description: { type: "string" },
+      modules: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["title", "description", "skills", "lessons"],
+          properties: {
+            title: { type: "string" },
+            description: { type: "string" },
+            skills: { type: "array", items: { type: "string" } },
+            lessons: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["title", "summary", "objectives", "estimatedMinutes"],
+                properties: {
+                  title: { type: "string" },
+                  summary: { type: "string" },
+                  objectives: { type: "array", items: { type: "string" } },
+                  estimatedMinutes: { type: "integer" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const courseLessonResponseFormat: AiResponseFormat = {
+  name: "generated_course_lesson",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["introduction", "sections", "exercise", "keyTakeaways"],
+    properties: {
+      introduction: { type: "string" },
+      sections: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["heading", "body"],
+          properties: {
+            heading: { type: "string" },
+            body: { type: "string" },
+          },
+        },
+      },
+      exercise: { type: "string" },
+      keyTakeaways: { type: "array", items: { type: "string" } },
+    },
+  },
+};
+
 const questRanks: QuestRank[] = [
   {
     name: "Starter",
@@ -307,6 +432,12 @@ export function App() {
   const [questBoard, setQuestBoard] = useState<QuestBoardState>(() => loadQuestBoard());
   const [applications, setApplications] = useState<JobApplication[]>(() => loadApplications());
   const [skillAnalysis, setSkillAnalysis] = useState<SkillAnalysisState>(() => loadSkillAnalysis());
+  const [courseState, setCourseState] = useState<CourseState>(() => loadCourses());
+  const [courseTopic, setCourseTopic] = useState("");
+  const [courseLevel, setCourseLevel] = useState<CourseLevel>("Beginner");
+  const [courseDepth, setCourseDepth] = useState<CourseDepth>("Standard");
+  const [courseBusy, setCourseBusy] = useState(false);
+  const [lessonBusy, setLessonBusy] = useState("");
   const [manualNote, setManualNote] = useState("");
   const [githubRepo, setGithubRepo] = useState("");
   const [jobQuery, setJobQuery] = useState("");
@@ -359,6 +490,14 @@ export function App() {
     ),
     [jobs, result.skills, input.targetRole, jobQuery, jobTargets],
   );
+  const activeCourse = useMemo(
+    () => courseState.courses.find((course) => course.id === courseState.activeCourseId),
+    [courseState],
+  );
+  const activeLesson = useMemo(
+    () => activeCourse?.modules.flatMap((module) => module.lessons).find((lesson) => lesson.id === courseState.activeLessonId),
+    [activeCourse, courseState.activeLessonId],
+  );
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(input));
@@ -379,6 +518,10 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(SKILL_ANALYSIS_KEY, JSON.stringify(skillAnalysis));
   }, [skillAnalysis]);
+
+  useEffect(() => {
+    localStorage.setItem(COURSES_KEY, JSON.stringify(courseState));
+  }, [courseState]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -423,6 +566,19 @@ export function App() {
 
   function addSource(source: EvidenceSource) {
     setInput((current) => ({ ...current, sources: [source, ...current.sources] }));
+  }
+
+  function upsertLearningEvidence(source: EvidenceSource) {
+    setInput((current) => {
+      const existing = current.sources.find((item) => item.id === source.id);
+      return {
+        ...current,
+        sources: [
+          existing ? { ...source, createdAt: existing.createdAt } : source,
+          ...current.sources.filter((item) => item.id !== source.id),
+        ],
+      };
+    });
   }
 
   function removeSource(id: string) {
@@ -512,7 +668,7 @@ export function App() {
       const nonGithubSkillCount = merged.skills.filter((skill) => skill.evidence.some((item) => !isGithubEvidenceTitle(profile, item.sourceTitle))).length;
       setStatus(
         merged.skills.length
-          ? `AI verified ${merged.skills.length} skill${merged.skills.length === 1 ? "" : "s"}: ${githubSkillCount} citing GitHub and ${nonGithubSkillCount} citing resume/profile evidence.`
+          ? `AI verified ${merged.skills.length} skill${merged.skills.length === 1 ? "" : "s"}: ${githubSkillCount} citing GitHub and ${nonGithubSkillCount} citing resume, profile, course, or quest evidence.`
           : "AI could not verify skills from the current evidence. Add more detailed project or work examples.",
       );
     } catch (error) {
@@ -697,6 +853,186 @@ export function App() {
     }
   }
 
+  async function generateCourse() {
+    const topic = courseTopic.trim();
+    if (!topic) {
+      setStatus("Enter a topic before generating a course.");
+      return;
+    }
+
+    const lessonCount = courseDepth === "Quick start" ? "3 modules with 2 lessons each" : courseDepth === "Deep dive" ? "5 modules with 3 lessons each" : "4 modules with 3 lessons each";
+    setCourseBusy(true);
+    setStatus(`Designing a ${courseLevel.toLowerCase()} course for ${topic}...`);
+    try {
+      const content = await askAi([
+        {
+          role: "system",
+          content: [
+            "You are SparkPath's curriculum architect.",
+            "Create a coherent, practical course that teaches the requested topic from the learner's selected level.",
+            "The course must progress logically, include applied exercises, and name concrete skills practiced in each module.",
+            "Do not write full lesson content yet. Create a strong course outline that can be expanded lesson by lesson.",
+            "Avoid vague module names. Every lesson must have measurable learning objectives.",
+            "Keep the outline compact enough for a 1,800-token response: module descriptions and lesson summaries must each be one short sentence.",
+            "Give every lesson exactly two objectives, each under eight words. Give every module no more than four skill names.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: [
+            `Topic: ${topic}`,
+            `Learner level: ${courseLevel}`,
+            `Course depth: ${courseDepth}; create ${lessonCount}.`,
+            `Student target role: ${input.targetRole || "Not specified"}`,
+            `Existing evidence-derived skills: ${result.skills.slice(0, 8).map((skill) => skill.name).join(", ") || "None yet"}`,
+            "Build a standalone course that closes useful knowledge gaps without assuming unsupported prior knowledge.",
+          ].join("\n"),
+        },
+      ], courseOutlineResponseFormat);
+      const generated = parseGeneratedCourse(content, topic, courseLevel, courseDepth);
+      const firstLessonId = generated.modules[0]?.lessons[0]?.id ?? "";
+      setCourseState((current) => ({
+        courses: [generated, ...current.courses],
+        activeCourseId: generated.id,
+        activeLessonId: firstLessonId,
+      }));
+      setCourseTopic("");
+      setStatus(`Generated ${generated.title} with ${courseLessonCount(generated)} lessons.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Course generation failed.");
+    } finally {
+      setCourseBusy(false);
+    }
+  }
+
+  function selectCourse(courseId: string) {
+    const course = courseState.courses.find((item) => item.id === courseId);
+    setCourseState((current) => ({
+      ...current,
+      activeCourseId: courseId,
+      activeLessonId: course?.modules[0]?.lessons[0]?.id ?? "",
+    }));
+  }
+
+  async function openCourseLesson(courseId: string, lessonId: string) {
+    const course = courseState.courses.find((item) => item.id === courseId);
+    const lesson = course?.modules.flatMap((module) => module.lessons).find((item) => item.id === lessonId);
+    if (!course || !lesson) return;
+
+    setCourseState((current) => ({ ...current, activeCourseId: courseId, activeLessonId: lessonId }));
+    if (lesson.content) return;
+
+    setLessonBusy(lessonId);
+    setStatus(`Writing lesson: ${lesson.title}...`);
+    try {
+      const module = course.modules.find((item) => item.lessons.some((candidate) => candidate.id === lessonId));
+      const content = await askAi([
+        {
+          role: "system",
+          content: [
+            "You are SparkPath's expert course instructor.",
+            "Write a clear, accurate lesson for the supplied course context.",
+            "Teach concepts before using them, use concrete examples, and end with a practical exercise.",
+            "The body fields may use concise markdown. Do not mention that the lesson was AI generated.",
+            "Return exactly three focused sections. Keep each section under 180 words so the response is complete.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: [
+            `Course: ${course.title}`,
+            `Level: ${course.level}`,
+            `Module: ${module?.title ?? "Course module"}`,
+            `Module skills: ${module?.skills.join(", ") ?? ""}`,
+            `Lesson: ${lesson.title}`,
+            `Lesson summary: ${lesson.summary}`,
+            `Objectives: ${lesson.objectives.join("; ")}`,
+            `Target length: approximately ${lesson.estimatedMinutes} minutes of reading and practice.`,
+          ].join("\n"),
+        },
+      ], courseLessonResponseFormat);
+      const lessonContent = parseCourseLesson(content);
+      setCourseState((current) => ({
+        ...current,
+        courses: current.courses.map((item) => item.id === courseId ? {
+          ...item,
+          modules: item.modules.map((courseModule) => ({
+            ...courseModule,
+            lessons: courseModule.lessons.map((courseLesson) => courseLesson.id === lessonId ? { ...courseLesson, content: lessonContent } : courseLesson),
+          })),
+        } : item),
+      }));
+      setStatus(`Lesson ready: ${lesson.title}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Lesson generation failed.");
+    } finally {
+      setLessonBusy("");
+    }
+  }
+
+  function toggleLessonComplete(courseId: string, lessonId: string) {
+    const course = courseState.courses.find((item) => item.id === courseId);
+    if (!course) return;
+    const lesson = course.modules.flatMap((module) => module.lessons).find((item) => item.id === lessonId);
+    if (!lesson) return;
+
+    const completedAt = lesson.completedAt ? undefined : new Date().toISOString();
+    const updatedCourse: GeneratedCourse = {
+      ...course,
+      modules: course.modules.map((module) => ({
+        ...module,
+        lessons: module.lessons.map((item) => item.id === lessonId ? { ...item, completedAt } : item),
+      })),
+    };
+    setCourseState((current) => ({
+      ...current,
+      courses: current.courses.map((item) => item.id === courseId ? updatedCourse : item),
+    }));
+    const progress = courseProgress(updatedCourse);
+    if (progress.percent >= 25) recordCourseEvidence(updatedCourse);
+    setStatus(completedAt
+      ? `Lesson completed. ${progress.percent}% of ${updatedCourse.title} is now finished.`
+      : `Lesson reopened. ${progress.percent}% of the course remains complete.`);
+  }
+
+  function recordCourseEvidence(course: GeneratedCourse) {
+    const progress = courseProgress(course);
+    const completedLessons = course.modules.flatMap((module) => module.lessons.map((lesson) => ({ module, lesson })))
+      .filter(({ lesson }) => lesson.completedAt);
+    const practicedSkills = unique(completedLessons.flatMap(({ module }) => module.skills));
+    upsertLearningEvidence({
+      id: `course-${course.id}`,
+      type: "course",
+      title: `Course progress: ${course.title}`,
+      content: [
+        `Course progress evidence: ${course.title}.`,
+        `Completed ${progress.completed} of ${progress.total} lessons (${progress.percent}%).`,
+        `Level: ${course.level}. Topic: ${course.topic}.`,
+        `Completed lessons: ${completedLessons.map(({ lesson }) => lesson.title).join("; ")}.`,
+        `Practiced skills: ${practicedSkills.join(", ")}.`,
+        ...completedLessons.slice(-6).map(({ lesson }) => `Lesson objective demonstrated: ${lesson.objectives.join("; ")}.`),
+      ].join("\n"),
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  function recordQuestEvidence(project: ProjectRecommendation, verifiedAt: string, detail: string) {
+    upsertLearningEvidence({
+      id: `quest-${projectKey(project.title)}`,
+      type: "quest",
+      title: `Verified quest: ${project.title}`,
+      content: [
+        `Verified quest completion: ${project.title}.`,
+        `Purpose: ${project.why}`,
+        `Completed deliverables: ${project.deliverables.join("; ")}.`,
+        `Proof signal: ${project.proofSignal}`,
+        `Verification: ${detail}`,
+        `Verified at: ${verifiedAt}.`,
+      ].join("\n"),
+      createdAt: verifiedAt,
+    });
+  }
+
   function updateProjectProof(project: ProjectRecommendation, proofUrl: string) {
     const key = projectKey(project.title);
     setProjectProgress((current) => ({
@@ -721,6 +1057,7 @@ export function App() {
       const key = projectKey(project.title);
       setProjectProgress((current) => {
         const existing = current[key] ?? { proofUrl: "", status: "not_started" as const };
+        const activityDates = appendQuestActivity(existing.activityDates, photos.map((photo) => photo.createdAt));
         return {
           ...current,
           [key]: {
@@ -732,6 +1069,7 @@ export function App() {
             photoReview: undefined,
             photoScore: existing.status === "verified" ? 100 : undefined,
             startedAt: existing.startedAt ?? new Date().toISOString(),
+            activityDates,
             message: existing.status === "verified"
               ? "Quest remains verified. New pictures were added to the evidence."
               : "Pictures added. Run AI review to estimate visible completion.",
@@ -783,9 +1121,10 @@ export function App() {
         },
       ]);
       const score = extractCompletionScore(content);
+      const reviewedAt = new Date().toISOString();
+      const verified = progress?.status === "verified" || score >= 80;
       setProjectProgress((current) => {
         const existing = current[key] ?? { proofUrl: "", status: "not_started" as const };
-        const verified = existing.status === "verified" || score >= 80;
         return {
           ...current,
           [key]: {
@@ -795,14 +1134,16 @@ export function App() {
             difficulty: project.difficulty,
             photoReview: content,
             photoScore: verified ? Math.max(score, existing.photoScore ?? 100) : score,
-            checkedAt: new Date().toISOString(),
-            verifiedAt: verified ? existing.verifiedAt ?? new Date().toISOString() : existing.verifiedAt,
+            checkedAt: reviewedAt,
+            verifiedAt: verified ? existing.verifiedAt ?? reviewedAt : existing.verifiedAt,
+            activityDates: appendQuestActivity(existing.activityDates, [reviewedAt]),
             message: verified
               ? "Quest verified. XP has been added to your rank."
               : "AI review found more proof or work still needed.",
           },
         };
       });
+      if (verified) recordQuestEvidence(project, progress?.verifiedAt ?? reviewedAt, `AI reviewed uploaded project images at ${score}% visible completion.`);
       setStatus(`AI photo review complete${score ? `: ${score}%` : ""}.`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "AI photo review failed.");
@@ -827,6 +1168,7 @@ export function App() {
     setStatus(`Creating baseline for ${project.title}...`);
     try {
       const snapshot = await inspectGithubRepoProgress(progress.proofUrl);
+      const startedAt = new Date().toISOString();
       setProjectProgress((current) => ({
         ...current,
         [key]: {
@@ -837,8 +1179,9 @@ export function App() {
           difficulty: project.difficulty,
           baseline: snapshot,
           lastSnapshot: snapshot,
-          startedAt: current[key]?.startedAt ?? new Date().toISOString(),
+          startedAt: current[key]?.startedAt ?? startedAt,
           checkedAt: snapshot.checkedAt,
+          activityDates: appendQuestActivity(current[key]?.activityDates, [startedAt]),
           message: current[key]?.status === "verified"
             ? "Quest remains verified. A fresh tracking baseline was saved."
             : "Baseline saved. New commits after this point will verify progress.",
@@ -871,8 +1214,10 @@ export function App() {
     try {
       const snapshot = await inspectGithubRepoProgress(progress.proofUrl);
       const baseline = progress.baseline ?? snapshot;
-      const verified = progress.status === "verified" || hasNewProgress(baseline, snapshot);
+      const newProgress = hasNewProgress(baseline, snapshot);
+      const verified = progress.status === "verified" || newProgress;
       const project = questBoard.projects.find((candidate) => projectKey(candidate.title) === key);
+      const verifiedAt = progress.verifiedAt ?? new Date().toISOString();
       setProjectProgress((current) => ({
         ...current,
         [key]: {
@@ -883,12 +1228,18 @@ export function App() {
           baseline,
           lastSnapshot: snapshot,
           checkedAt: snapshot.checkedAt,
-          verifiedAt: verified ? current[key]?.verifiedAt ?? new Date().toISOString() : current[key]?.verifiedAt,
+          verifiedAt: verified ? current[key]?.verifiedAt ?? verifiedAt : current[key]?.verifiedAt,
+          activityDates: newProgress
+            ? appendQuestActivity(current[key]?.activityDates, [snapshot.checkedAt])
+            : current[key]?.activityDates,
           message: verified
             ? "Quest verified from repository activity. XP has been added to your rank."
             : "Still tracking. Push new work after the baseline checkpoint to verify completion.",
         },
       }));
+      if (verified && project) {
+        recordQuestEvidence(project, verifiedAt, `GitHub repository activity verified at ${snapshot.fullName}; ${snapshot.commitCount} recent commits observed.`);
+      }
       if (!silent) setStatus(verified ? "Project progress verified." : "No new GitHub progress detected yet.");
     } catch (error) {
       if (!silent) setStatus(error instanceof Error ? error.message : "Progress check failed.");
@@ -938,6 +1289,25 @@ export function App() {
               onStartTracking={startTrackingProject}
               onCheckProgress={checkProjectProgress}
             />
+          ) : activeView === "courses" ? (
+            <CoursesPage
+              courses={courseState.courses}
+              activeCourse={activeCourse}
+              activeLesson={activeLesson}
+              topic={courseTopic}
+              level={courseLevel}
+              depth={courseDepth}
+              courseBusy={courseBusy}
+              lessonBusy={lessonBusy}
+              onTopicChange={setCourseTopic}
+              onLevelChange={setCourseLevel}
+              onDepthChange={setCourseDepth}
+              onGenerate={generateCourse}
+              onSelectCourse={selectCourse}
+              onOpenLesson={openCourseLesson}
+              onToggleComplete={toggleLessonComplete}
+              onBackToLibrary={() => setCourseState((current) => ({ ...current, activeCourseId: "", activeLessonId: "" }))}
+            />
           ) : (
             <JobsPage
               input={input}
@@ -975,6 +1345,10 @@ export function App() {
               <Home size={18} />
               Home
             </button>
+            <button type="button" className={activeView === "courses" ? "active" : ""} onClick={() => setActiveView("courses")}>
+              <GraduationCap size={18} />
+              Courses
+            </button>
             <button type="button" className={activeView === "jobs" ? "active" : ""} onClick={() => setActiveView("jobs")}>
               <BriefcaseBusiness size={18} />
               Job search
@@ -989,7 +1363,7 @@ export function App() {
             <span>{questGame.xp} XP</span>
           </div>
           <div className="rail-status">
-            <span>{busy || questBusy || skillAnalysisBusy || aiBusyJob ? <Loader2 size={16} className="spin" /> : <BadgeCheck size={16} />}</span>
+            <span>{busy || questBusy || skillAnalysisBusy || courseBusy || lessonBusy || aiBusyJob ? <Loader2 size={16} className="spin" /> : <BadgeCheck size={16} />}</span>
             <p>{status}</p>
           </div>
         </aside>
@@ -1254,6 +1628,8 @@ function DashboardPage(props: {
             </div>
           </section>
 
+          <QuestActivityCalendar progressMap={projectProgress} />
+
           <div className="project-stack">
             {questProjects.map((project) => {
               const progress = projectProgress[projectKey(project.title)] ?? { proofUrl: "", status: "not_started" };
@@ -1322,6 +1698,341 @@ function DashboardPage(props: {
           </div>
         </article>
       </section>
+    </div>
+  );
+}
+
+function QuestActivityCalendar({ progressMap }: { progressMap: Record<string, ProjectProgress> }) {
+  const calendar = useMemo(() => buildQuestActivityCalendar(progressMap), [progressMap]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container || container.scrollWidth <= container.clientWidth) return;
+    container.scrollLeft = container.scrollWidth - container.clientWidth;
+  }, [calendar.totalEvents]);
+
+  return (
+    <section className="quest-activity" aria-labelledby="quest-activity-title">
+      <div className="quest-activity-heading">
+        <div>
+          <span className="eyebrow">Consistency map</span>
+          <h3 id="quest-activity-title"><CalendarDays size={19} />Quest activity</h3>
+          <p>{calendar.activeDays} active day{calendar.activeDays === 1 ? "" : "s"} across {calendar.totalEvents} recorded work event{calendar.totalEvents === 1 ? "" : "s"}.</p>
+        </div>
+        <div className="quest-activity-stat">
+          <strong>{calendar.longestStreak}</strong>
+          <span>day best streak</span>
+        </div>
+      </div>
+
+      <div className="quest-activity-scroll" ref={scrollRef}>
+        <div className="quest-activity-chart">
+          <div className="quest-month-spacer" />
+          <div className="quest-months" aria-hidden="true">
+            {calendar.months.map((month) => (
+              <span key={`${month.label}-${month.column}`} style={{ gridColumnStart: month.column }}>{month.label}</span>
+            ))}
+          </div>
+          <div className="quest-weekdays" aria-hidden="true">
+            <span style={{ gridRow: 2 }}>Mon</span>
+            <span style={{ gridRow: 4 }}>Wed</span>
+            <span style={{ gridRow: 6 }}>Fri</span>
+          </div>
+          <div className="quest-activity-grid" role="grid" aria-label="Quest work activity for the last year">
+            {calendar.weeks.flatMap((week) => week.map((day) => (
+              <span
+                className={`quest-activity-day level-${day.level}`}
+                key={day.key}
+                role="gridcell"
+                aria-label={day.label}
+                title={day.label}
+              />
+            )))}
+          </div>
+        </div>
+      </div>
+
+      <div className="quest-activity-footer">
+        <span>Start tracking, upload proof, or push progress to record a day.</span>
+        <div className="quest-activity-legend" aria-label="Activity intensity legend">
+          <span>Less</span>
+          {[0, 1, 2, 3, 4].map((level) => <i className={`level-${level}`} key={level} />)}
+          <span>More</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CoursesPage(props: {
+  courses: GeneratedCourse[];
+  activeCourse?: GeneratedCourse;
+  activeLesson?: CourseLesson;
+  topic: string;
+  level: CourseLevel;
+  depth: CourseDepth;
+  courseBusy: boolean;
+  lessonBusy: string;
+  onTopicChange: (value: string) => void;
+  onLevelChange: (value: CourseLevel) => void;
+  onDepthChange: (value: CourseDepth) => void;
+  onGenerate: () => void;
+  onSelectCourse: (courseId: string) => void;
+  onOpenLesson: (courseId: string, lessonId: string) => void;
+  onToggleComplete: (courseId: string, lessonId: string) => void;
+  onBackToLibrary: () => void;
+}) {
+  const {
+    courses,
+    activeCourse,
+    activeLesson,
+    topic,
+    level,
+    depth,
+    courseBusy,
+    lessonBusy,
+    onTopicChange,
+    onLevelChange,
+    onDepthChange,
+    onGenerate,
+    onSelectCourse,
+    onOpenLesson,
+    onToggleComplete,
+    onBackToLibrary,
+  } = props;
+
+  if (!activeCourse) {
+    return (
+      <div className="view-stack course-library">
+        <header className="course-hero">
+          <div className="course-hero-copy">
+            <p className="eyebrow">AI course studio</p>
+            <h1>Learn anything.<br /><em>Prove progress.</em></h1>
+            <p>
+              Generate a structured course for any topic. As you complete lessons, SparkPath turns that progress into evidence for your living skill graph.
+            </p>
+          </div>
+          <div className="course-hero-mark" aria-hidden="true">
+            <GraduationCap size={60} />
+            <span>25%</span>
+            <small>First skill<br />evidence milestone</small>
+          </div>
+        </header>
+
+        <section className="course-generator">
+          <div className="course-generator-heading">
+            <span><Sparkles size={18} /></span>
+            <div>
+              <p className="eyebrow">Create a curriculum</p>
+              <h2>What do you want to master?</h2>
+            </div>
+          </div>
+          <label className="course-topic-field">
+            Topic
+            <input
+              value={topic}
+              onChange={(event) => onTopicChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && topic.trim() && !courseBusy) onGenerate();
+              }}
+              placeholder="e.g. React performance, financial modeling, reverse engineering"
+            />
+          </label>
+          <div className="course-options">
+            <fieldset>
+              <legend>Starting level</legend>
+              <div className="option-pills">
+                {(["Beginner", "Intermediate", "Advanced"] as CourseLevel[]).map((option) => (
+                  <button key={option} type="button" className={level === option ? "selected" : ""} onClick={() => onLevelChange(option)}>
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Course depth</legend>
+              <div className="option-pills">
+                {(["Quick start", "Standard", "Deep dive"] as CourseDepth[]).map((option) => (
+                  <button key={option} type="button" className={depth === option ? "selected" : ""} onClick={() => onDepthChange(option)}>
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          </div>
+          <button className="generate-course-button" type="button" onClick={onGenerate} disabled={courseBusy || !topic.trim()}>
+            {courseBusy ? <Loader2 size={20} className="spin" /> : <Sparkles size={20} />}
+            {courseBusy ? "Designing your course..." : "Generate course"}
+          </button>
+        </section>
+
+        <section className="course-shelf">
+          <div className="course-shelf-heading">
+            <div>
+              <p className="eyebrow">Your library</p>
+              <h2>{courses.length ? `${courses.length} active course${courses.length === 1 ? "" : "s"}` : "Your courses will live here"}</h2>
+            </div>
+            <Library size={26} />
+          </div>
+          {courses.length ? (
+            <div className="course-card-grid">
+              {courses.map((course, index) => {
+                const progress = courseProgress(course);
+                return (
+                  <button type="button" className="course-card" key={course.id} onClick={() => onSelectCourse(course.id)}>
+                    <span className="course-card-index">{String(index + 1).padStart(2, "0")}</span>
+                    <small>{course.level} · {course.depth}</small>
+                    <h3>{course.title}</h3>
+                    <p>{course.description}</p>
+                    <div className="course-card-progress">
+                      <i style={{ width: `${progress.percent}%` }} />
+                    </div>
+                    <footer>
+                      <span>{progress.completed}/{progress.total} lessons</span>
+                      <strong>{progress.percent}% <ChevronRight size={16} /></strong>
+                    </footer>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="course-empty">
+              <BookMarked size={34} />
+              <p>Choose any topic above. SparkPath will turn it into modules, lessons, exercises, and trackable skill evidence.</p>
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  const progress = courseProgress(activeCourse);
+  const allLessons = activeCourse.modules.flatMap((module) => module.lessons);
+  const activeIndex = Math.max(0, allLessons.findIndex((lesson) => lesson.id === activeLesson?.id));
+  const previousLesson = activeIndex > 0 ? allLessons[activeIndex - 1] : undefined;
+  const nextLesson = activeIndex < allLessons.length - 1 ? allLessons[activeIndex + 1] : undefined;
+  const activeModule = activeCourse.modules.find((module) => module.lessons.some((lesson) => lesson.id === activeLesson?.id));
+
+  return (
+    <div className="course-reader">
+      <header className="course-reader-header">
+        <button type="button" className="course-back" onClick={onBackToLibrary}><ChevronLeft size={17} />Course library</button>
+        <div>
+          <p>{activeCourse.level} · {activeCourse.depth}</p>
+          <h1>{activeCourse.title}</h1>
+          <span>{activeCourse.modules.length} modules · {progress.total} lessons</span>
+        </div>
+        <div className="course-total-progress">
+          <strong>{progress.percent}%</strong>
+          <span>complete</span>
+          <i><b style={{ width: `${progress.percent}%` }} /></i>
+        </div>
+      </header>
+
+      <div className="course-reader-layout">
+        <aside className="course-outline">
+          <div className="course-outline-title"><ListTree size={18} /><strong>Course outline</strong></div>
+          {activeCourse.modules.map((module, moduleIndex) => {
+            const moduleCompleted = module.lessons.filter((lesson) => lesson.completedAt).length;
+            return (
+              <section key={module.id}>
+                <header>
+                  <span>{String(moduleIndex + 1).padStart(2, "0")}</span>
+                  <div>
+                    <h3>{module.title}</h3>
+                    <small>{moduleCompleted}/{module.lessons.length} complete</small>
+                  </div>
+                </header>
+                <div>
+                  {module.lessons.map((lesson) => (
+                    <button
+                      type="button"
+                      key={lesson.id}
+                      className={lesson.id === activeLesson?.id ? "active" : ""}
+                      onClick={() => onOpenLesson(activeCourse.id, lesson.id)}
+                    >
+                      {lesson.completedAt ? <CheckCircle2 size={17} /> : lesson.id === activeLesson?.id ? <PlayCircle size={17} /> : <Circle size={17} />}
+                      <span>{lesson.title}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </aside>
+
+        <article className="lesson-stage">
+          {activeLesson ? (
+            <>
+              <div className="lesson-meta">
+                <div>
+                  <p className="eyebrow">{activeModule?.title}</p>
+                  <span>Lesson {activeIndex + 1} of {allLessons.length} · {activeLesson.estimatedMinutes} min</span>
+                </div>
+                <button
+                  type="button"
+                  className={activeLesson.completedAt ? "lesson-done completed" : "lesson-done"}
+                  onClick={() => onToggleComplete(activeCourse.id, activeLesson.id)}
+                >
+                  {activeLesson.completedAt ? <Check size={18} /> : <Circle size={18} />}
+                  {activeLesson.completedAt ? "Completed" : "Mark complete"}
+                </button>
+              </div>
+              <h2>{activeLesson.title}</h2>
+              <p className="lesson-summary">{activeLesson.summary}</p>
+
+              {lessonBusy === activeLesson.id ? (
+                <div className="lesson-loading">
+                  <Loader2 size={28} className="spin" />
+                  <h3>Preparing this lesson</h3>
+                  <p>Building explanations, examples, and an applied exercise.</p>
+                </div>
+              ) : activeLesson.content ? (
+                <div className="lesson-content">
+                  <p className="lesson-introduction">{activeLesson.content.introduction}</p>
+                  {activeLesson.content.sections.map((section) => (
+                    <section key={section.heading}>
+                      <h3>{section.heading}</h3>
+                      {section.body.split("\n").filter(Boolean).map((paragraph, index) => <p key={`${section.heading}-${index}`}>{paragraph}</p>)}
+                    </section>
+                  ))}
+                  <aside className="lesson-exercise">
+                    <span><Target size={19} />Practical exercise</span>
+                    <p>{activeLesson.content.exercise}</p>
+                  </aside>
+                  <section className="lesson-takeaways">
+                    <h3>Key takeaways</h3>
+                    <ul>
+                      {activeLesson.content.keyTakeaways.map((takeaway) => <li key={takeaway}><Check size={16} />{takeaway}</li>)}
+                    </ul>
+                  </section>
+                </div>
+              ) : (
+                <div className="lesson-preview">
+                  <BookOpen size={34} />
+                  <h3>Lesson objectives</h3>
+                  <ul>{activeLesson.objectives.map((objective) => <li key={objective}>{objective}</li>)}</ul>
+                  <button type="button" onClick={() => onOpenLesson(activeCourse.id, activeLesson.id)}>
+                    <Sparkles size={18} />Generate and start lesson
+                  </button>
+                </div>
+              )}
+
+              <footer className="lesson-navigation">
+                <button type="button" disabled={!previousLesson} onClick={() => previousLesson && onOpenLesson(activeCourse.id, previousLesson.id)}>
+                  <ChevronLeft size={17} />Previous
+                </button>
+                <button type="button" disabled={!nextLesson} onClick={() => nextLesson && onOpenLesson(activeCourse.id, nextLesson.id)}>
+                  Next lesson<ChevronRight size={17} />
+                </button>
+              </footer>
+            </>
+          ) : (
+            <div className="lesson-preview"><BookOpen size={34} /><h3>Select a lesson to begin</h3></div>
+          )}
+        </article>
+      </div>
     </div>
   );
 }
@@ -1552,7 +2263,7 @@ function skillAnalysisPartitions(input: StudentInput): SkillAnalysisPartition[] 
   if (otherSources.length || input.headline.trim() || input.links.trim()) {
     partitions.push({
       key: otherSources.length ? "resume" : "profile",
-      label: otherSources.length ? "Resume and profile evidence" : "Profile evidence",
+      label: otherSources.length ? "Resume, profile, course, and quest evidence" : "Profile evidence",
       profile: { ...input, sources: otherSources },
     });
   }
@@ -1945,6 +2656,93 @@ function normalizeQuestResources(resources: unknown, title: string): ProjectReco
   return normalized.slice(0, 5);
 }
 
+function parseGeneratedCourse(content: string, topic: string, level: CourseLevel, depth: CourseDepth): GeneratedCourse {
+  const parsed = parseStructuredJson(content);
+  const courseId = crypto.randomUUID();
+  const modules = (Array.isArray(parsed.modules) ? parsed.modules : [])
+    .map((module: any, moduleIndex: number) => {
+      const title = cleanText(module?.title, 90);
+      const description = cleanText(module?.description, 240);
+      const skills = Array.isArray(module?.skills)
+        ? module.skills.map((skill: unknown) => cleanText(skill, 60)).filter(Boolean).slice(0, 8)
+        : [];
+      const lessons = (Array.isArray(module?.lessons) ? module.lessons : [])
+        .map((lesson: any, lessonIndex: number) => {
+          const lessonTitle = cleanText(lesson?.title, 100);
+          const summary = cleanText(lesson?.summary, 260);
+          const objectives = Array.isArray(lesson?.objectives)
+            ? lesson.objectives.map((objective: unknown) => cleanText(objective, 140)).filter(Boolean).slice(0, 6)
+            : [];
+          if (!lessonTitle || !summary || !objectives.length) return null;
+          return {
+            id: `${courseId}-m${moduleIndex + 1}-l${lessonIndex + 1}`,
+            title: lessonTitle,
+            summary,
+            objectives,
+            estimatedMinutes: Math.max(8, Math.min(90, Number(lesson?.estimatedMinutes) || 20)),
+          } satisfies CourseLesson;
+        })
+        .filter((lesson: CourseLesson | null): lesson is CourseLesson => Boolean(lesson));
+      if (!title || !description || !skills.length || lessons.length < 2) return null;
+      return {
+        id: `${courseId}-m${moduleIndex + 1}`,
+        title,
+        description,
+        skills,
+        lessons,
+      } satisfies CourseModule;
+    })
+    .filter((module: CourseModule | null): module is CourseModule => Boolean(module));
+
+  if (modules.length < 2) {
+    throw new Error("AI did not return a usable course outline. Try a more specific topic.");
+  }
+  return {
+    id: courseId,
+    topic,
+    title: cleanText(parsed.title, 120) || `${topic} Learning Path`,
+    description: cleanText(parsed.description, 320) || `A practical ${level.toLowerCase()} course in ${topic}.`,
+    level,
+    depth,
+    modules,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function parseCourseLesson(content: string): CourseLessonContent {
+  const parsed = parseStructuredJson(content);
+  const introduction = String(parsed.introduction ?? "").trim().slice(0, 1800);
+  const sections = (Array.isArray(parsed.sections) ? parsed.sections : [])
+    .map((section: any) => ({
+      heading: cleanText(section?.heading, 100),
+      body: String(section?.body ?? "").trim().slice(0, 5000),
+    }))
+    .filter((section: CourseLessonContent["sections"][number]) => section.heading && section.body)
+    .slice(0, 7);
+  const exercise = String(parsed.exercise ?? "").trim().slice(0, 1800);
+  const keyTakeaways = Array.isArray(parsed.keyTakeaways)
+    ? parsed.keyTakeaways.map((item: unknown) => cleanText(item, 180)).filter(Boolean).slice(0, 8)
+    : [];
+  if (!introduction || sections.length < 2 || !exercise || !keyTakeaways.length) {
+    throw new Error("AI did not return a complete lesson. Try opening it again.");
+  }
+  return { introduction, sections, exercise, keyTakeaways };
+}
+
+function courseLessonCount(course: GeneratedCourse) {
+  return course.modules.reduce((total, module) => total + module.lessons.length, 0);
+}
+
+function courseProgress(course: GeneratedCourse) {
+  const lessons = course.modules.flatMap((module) => module.lessons);
+  const completed = lessons.filter((lesson) => lesson.completedAt).length;
+  return {
+    completed,
+    total: lessons.length,
+    percent: lessons.length ? Math.round((completed / lessons.length) * 100) : 0,
+  };
+}
+
 function calculateQuestGame(projects: ProjectRecommendation[], progressMap: Record<string, ProjectProgress>): QuestGameState {
   const currentProjectMap = new Map(projects.map((project) => [projectKey(project.title), project]));
   const completedEntries = Object.entries(progressMap).filter(([, progress]) => progress.status === "verified");
@@ -1981,6 +2779,106 @@ function getQuestProgressPercent(progress: ProjectProgress) {
   if (typeof progress.photoScore === "number") return Math.max(0, Math.min(99, progress.photoScore));
   if (progress.status === "tracking") return 35;
   return 0;
+}
+
+function appendQuestActivity(existing: string[] | undefined, dates: string[]) {
+  return [...(existing ?? []), ...dates.filter((date) => !Number.isNaN(new Date(date).getTime()))].slice(-600);
+}
+
+function buildQuestActivityCalendar(progressMap: Record<string, ProjectProgress>) {
+  const countByDay = new Map<string, number>();
+  Object.values(progressMap).forEach((progress) => {
+    const dates = progress.activityDates?.length
+      ? progress.activityDates
+      : [
+          progress.startedAt,
+          progress.verifiedAt,
+          ...(progress.photos ?? []).map((photo) => photo.createdAt),
+        ].filter((date): date is string => Boolean(date));
+    dates.forEach((date) => {
+      const key = localDateKey(new Date(date));
+      if (!key) return;
+      countByDay.set(key, (countByDay.get(key) ?? 0) + 1);
+    });
+  });
+
+  const today = startOfLocalDay(new Date());
+  const currentWeekStart = addLocalDays(today, -today.getDay());
+  const firstDay = addLocalDays(currentWeekStart, -52 * 7);
+  const weeks = Array.from({ length: 53 }, (_, weekIndex) => (
+    Array.from({ length: 7 }, (_, dayIndex) => {
+      const date = addLocalDays(firstDay, weekIndex * 7 + dayIndex);
+      const key = localDateKey(date);
+      const count = countByDay.get(key) ?? 0;
+      const dateLabel = new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" }).format(date);
+      return {
+        key,
+        count,
+        level: count === 0 ? 0 : Math.min(4, count),
+        label: count
+          ? `${dateLabel}: ${count} quest work event${count === 1 ? "" : "s"}`
+          : `${dateLabel}: no quest activity`,
+      };
+    })
+  ));
+
+  const months: Array<{ label: string; column: number }> = [];
+  let previousMonth = "";
+  weeks.forEach((week, index) => {
+    const anchor = new Date(`${week[3].key}T12:00:00`);
+    const monthKey = `${anchor.getFullYear()}-${anchor.getMonth()}`;
+    if (monthKey === previousMonth) return;
+    previousMonth = monthKey;
+    const nextMonth = {
+      label: new Intl.DateTimeFormat(undefined, { month: "short" }).format(anchor),
+      column: index + 1,
+    };
+    const previousLabel = months[months.length - 1];
+    if (previousLabel && nextMonth.column - previousLabel.column < 3) {
+      months[months.length - 1] = nextMonth;
+    } else {
+      months.push(nextMonth);
+    }
+  });
+
+  const visibleKeys = new Set(weeks.flatMap((week) => week.map((day) => day.key)));
+  const activeKeys = Array.from(countByDay.keys()).filter((key) => visibleKeys.has(key)).sort();
+  let longestStreak = 0;
+  let runningStreak = 0;
+  let previousDate: Date | null = null;
+  activeKeys.forEach((key) => {
+    const date = new Date(`${key}T12:00:00`);
+    const consecutive = previousDate && Math.round((date.getTime() - previousDate.getTime()) / 86_400_000) === 1;
+    runningStreak = consecutive ? runningStreak + 1 : 1;
+    longestStreak = Math.max(longestStreak, runningStreak);
+    previousDate = date;
+  });
+
+  return {
+    weeks,
+    months,
+    activeDays: activeKeys.length,
+    totalEvents: activeKeys.reduce((sum, key) => sum + (countByDay.get(key) ?? 0), 0),
+    longestStreak,
+  };
+}
+
+function localDateKey(date: Date) {
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addLocalDays(date: Date, amount: number) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + amount);
+  return result;
 }
 
 function extractJson(content: string) {
@@ -2207,6 +3105,21 @@ function loadSkillAnalysis(): SkillAnalysisState {
     };
   } catch {
     return { skills: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
+  }
+}
+
+function loadCourses(): CourseState {
+  const saved = localStorage.getItem(COURSES_KEY);
+  if (!saved) return { courses: [], activeCourseId: "", activeLessonId: "" };
+  try {
+    const parsed = JSON.parse(saved);
+    return {
+      courses: Array.isArray(parsed.courses) ? parsed.courses : [],
+      activeCourseId: typeof parsed.activeCourseId === "string" ? parsed.activeCourseId : "",
+      activeLessonId: typeof parsed.activeLessonId === "string" ? parsed.activeLessonId : "",
+    };
+  } catch {
+    return { courses: [], activeCourseId: "", activeLessonId: "" };
   }
 }
 

@@ -782,7 +782,7 @@ export function App() {
     try {
       const responses = await Promise.all(searchTargets.map(async (target) => {
         const response = await fetch(`/api/jobs?q=${encodeURIComponent(target.title)}&country=${encodeURIComponent(jobCountry)}`);
-        const data = await response.json();
+        const data = await readApiJson(response, "/api/jobs");
         if (!response.ok) throw new Error(data.error || `Job search failed for ${target.title}.`);
         return { target, data };
       }));
@@ -2664,12 +2664,29 @@ async function askAi(messages: AiMessage[], responseFormat?: AiResponseFormat, o
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages, responseFormat, maxOutputTokens: options?.maxOutputTokens }),
   });
-  const data = await response.json();
+  const data = await readApiJson(response, "/api/ai");
   if (!response.ok) throw new Error(data.error || "AI request failed.");
   if (typeof data.content !== "string" || !data.content.trim()) {
     throw new Error(data.error || "AI request returned no generated content. Try again, or increase OPENAI_MAX_OUTPUT_TOKENS.");
   }
   return data.content;
+}
+
+async function readApiJson(response: Response, endpoint: string): Promise<any> {
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    const preview = text.replace(/\s+/g, " ").trim().slice(0, 180);
+    if (contentType.includes("text/html") || text.trim().startsWith("<!DOCTYPE") || text.trim().startsWith("<html")) {
+      throw new Error(
+        `${endpoint} returned HTML instead of JSON. On Render, deploy SparkPath as a Node Web Service using "npm start", not as a Static Site. If you just deployed, redeploy the latest commit and make sure the service start command is npm start. Response started with: ${preview}`,
+      );
+    }
+    throw new Error(`${endpoint} returned invalid JSON. Response started with: ${preview || "empty response"}`);
+  }
 }
 
 async function askResearchedAi(messages: AiMessage[], responseFormat?: AiResponseFormat) {
@@ -2678,7 +2695,7 @@ async function askResearchedAi(messages: AiMessage[], responseFormat?: AiRespons
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages, responseFormat, webSearch: true }),
   });
-  const data = await response.json();
+  const data = await readApiJson(response, "/api/ai");
   if (!response.ok) throw new Error(data.error || "Web research request failed.");
   if (typeof data.content !== "string" || !data.content.trim()) {
     throw new Error(data.error || "Web research returned no usable lesson content.");
@@ -2699,7 +2716,7 @@ async function findCourseVideo(course: GeneratedCourse, module: CourseModule | u
   ].filter(Boolean).join(" ");
   try {
     const response = await fetch(`/api/youtube?q=${encodeURIComponent(query)}`);
-    const data = await response.json();
+    const data = await readApiJson(response, "/api/youtube");
     if (!response.ok || !data.video?.url || !data.video?.id) return undefined;
     const url = cleanUrl(data.video.url);
     if (!url) return undefined;
@@ -3112,7 +3129,7 @@ async function enrichQuestVideos(projects: ProjectRecommendation[]) {
   return Promise.all(projects.map(async (project) => {
     const query = [project.title, project.deliverables[0] ?? "", "tutorial"].filter(Boolean).join(" ");
     const response = await fetch(`/api/youtube?q=${encodeURIComponent(query)}`);
-    const data = await response.json();
+    const data = await readApiJson(response, "/api/youtube");
     if (!response.ok || !data.video?.url) throw new Error(`Could not verify a YouTube video for "${project.title}". Try regenerating.`);
     const docs = project.resources.filter((resource) => resource.kind === "doc");
     return {

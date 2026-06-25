@@ -47,7 +47,7 @@ async function importGithubViaServer(target: string): Promise<EvidenceSource> {
     body: JSON.stringify({ target }),
   });
 
-  const data = await response.json().catch(() => ({}));
+  const data = await readServerJson(response, "/api/github/import");
   if (!response.ok) {
     if (response.status === 404) {
       throw new Error("GitHub import API route is missing. Deploy SparkPath as the Node web service, not a static site, and redeploy the latest commit.");
@@ -58,6 +58,20 @@ async function importGithubViaServer(target: string): Promise<EvidenceSource> {
     throw new Error("GitHub import returned no evidence source.");
   }
   return data.source as EvidenceSource;
+}
+
+async function readServerJson(response: Response, endpoint: string): Promise<any> {
+  const text = await response.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    const preview = text.replace(/\s+/g, " ").trim().slice(0, 180);
+    if ((response.headers.get("content-type") ?? "").includes("text/html") || text.trim().startsWith("<!DOCTYPE") || text.trim().startsWith("<html")) {
+      throw new Error(`${endpoint} returned HTML instead of JSON. Deploy SparkPath as a Node Web Service with npm start, not as a static site. Response started with: ${preview}`);
+    }
+    throw new Error(`${endpoint} returned invalid JSON. Response started with: ${preview || "empty response"}`);
+  }
 }
 
 export type RepoProgressSnapshot = {

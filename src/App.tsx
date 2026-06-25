@@ -896,16 +896,13 @@ export function App() {
         {
           role: "system",
           content: [
-            "You are SparkPath's curriculum architect.",
+            "You are SparkPath's curriculum researcher.",
             "Search the live web before designing the course.",
             "Ground the curriculum in authoritative current sources such as official documentation, university materials, standards bodies, peer-reviewed publications, reputable textbooks, or recognized professional organizations.",
             "Avoid building the curriculum from generic blog summaries when primary or authoritative sources exist.",
-            "Create a coherent, practical course that teaches the requested topic from the learner's selected level.",
-            "The course must progress logically, include applied exercises, and name concrete skills practiced in each module.",
-            "Do not write full lesson content yet. Create a strong course outline that can be expanded lesson by lesson.",
-            "Avoid vague module names. Every lesson must have measurable learning objectives.",
-            "Keep the outline compact enough for a 1,800-token response: module descriptions and lesson summaries must each be one short sentence.",
-            "Give every lesson exactly two objectives, each under eight words. Give every module no more than four skill names.",
+            "Do not return JSON. Return a compact research brief in plain markdown.",
+            "Include: recommended learning sequence, core subtopics, prerequisites, common learner mistakes, practical exercises, and source notes.",
+            "Keep the brief under 1,200 words.",
           ].join(" "),
         },
         {
@@ -916,11 +913,42 @@ export function App() {
             `Course depth: ${courseDepth}; create ${lessonCount}.`,
             `Student target role: ${input.targetRole || "Not specified"}`,
             `Existing evidence-derived skills: ${result.skills.slice(0, 8).map((skill) => skill.name).join(", ") || "None yet"}`,
-            "Build a standalone course that closes useful knowledge gaps without assuming unsupported prior knowledge.",
+            "Research what a strong course should cover for this topic and learner level.",
+          ].join("\n"),
+        },
+      ]);
+      setStatus(`Building course outline from ${research.sources.length} researched source${research.sources.length === 1 ? "" : "s"}...`);
+      const outline = await askAi([
+        {
+          role: "system",
+          content: [
+            "You are SparkPath's curriculum architect.",
+            "Convert the supplied research brief into a coherent practical course outline.",
+            "Use only the research brief, source list, and learner context. Do not invent unsupported claims.",
+            "The course must progress logically, include applied exercises, and name concrete skills practiced in each module.",
+            "Do not write full lesson content yet. Create a strong course outline that can be expanded lesson by lesson.",
+            "Avoid vague module names. Every lesson must have measurable learning objectives.",
+            "Keep the outline compact enough for a 1,800-token response: module descriptions and lesson summaries must each be one short sentence.",
+            "Give every lesson exactly two objectives, each under eight words. Give every module no more than four skill names.",
+            "Return only the structured JSON object.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: [
+            `Topic: ${topic}`,
+            `Learner level: ${courseLevel}`,
+            `Course depth: ${courseDepth}; create ${lessonCount}.`,
+            `Student target role: ${input.targetRole || "Not specified"}`,
+            `Existing evidence-derived skills: ${result.skills.slice(0, 8).map((skill) => skill.name).join(", ") || "None yet"}`,
+            "",
+            `Research sources:\n${research.sources.map((source, index) => `${index + 1}. ${source.title} - ${source.url}`).join("\n") || "No source metadata returned."}`,
+            "",
+            `Research brief:\n${research.content.slice(0, 10000)}`,
           ].join("\n"),
         },
       ], courseOutlineResponseFormat);
-      const generated = parseGeneratedCourse(research.content, topic, courseLevel, courseDepth, research.sources);
+      const generated = parseGeneratedCourse(outline, topic, courseLevel, courseDepth, research.sources);
       const firstLessonId = generated.modules[0]?.lessons[0]?.id ?? "";
       setCourseState((current) => ({
         courses: [generated, ...current.courses],
@@ -961,15 +989,13 @@ export function App() {
         {
           role: "system",
           content: [
-            "You are SparkPath's research-driven course instructor.",
-            "You must search the live web before writing the lesson and synthesize several reliable sources.",
+            "You are SparkPath's research assistant for course material.",
+            "Search the live web and produce a source-grounded research brief for a lesson writer.",
             "Prioritize primary and authoritative sources: official documentation, standards, universities, peer-reviewed research, government agencies, respected professional organizations, and original technical specifications.",
             "Use current sources where the topic changes over time. Cross-check important claims rather than relying on one page.",
-            "Write a substantial self-contained lesson that teaches the learner, not a brief summary or outline.",
-            "Define terminology, explain why concepts work, connect ideas, show concrete examples, discuss tradeoffs, and include a worked example.",
-            "Return four to six focused sections. Each section should contain meaningful teaching detail, not bullet-point fragments.",
-            "Add common misconceptions, a practical exercise, and three knowledge-check questions with answers.",
-            "Do not claim the learner demonstrated a skill merely by reading. Do not mention that the lesson was AI generated.",
+            "Do not return JSON. Return a concise research brief in plain markdown.",
+            "Include: core concepts, authoritative definitions, practical examples, tradeoffs, common misconceptions, exercise ideas, and source notes.",
+            "Keep the brief under 1,600 words so it can be converted into a structured lesson without truncation.",
           ].join(" "),
         },
         {
@@ -984,11 +1010,44 @@ export function App() {
             `Objectives: ${lesson.objectives.join("; ")}`,
             `Target length: approximately ${lesson.estimatedMinutes} minutes of reading and practice.`,
             `Course research sources already consulted: ${(course.sources ?? []).map((source) => source.url).slice(0, 10).join(", ") || "None yet"}`,
-            "Research this specific lesson independently. Make the final lesson detailed enough that a learner can study from it without asking a chatbot for the missing explanation.",
+            "Research this specific lesson independently. Gather enough detail for a learner to study from the final lesson without asking a chatbot for missing explanations.",
+          ].join("\n"),
+        },
+      ]);
+      setStatus(`Building structured lesson from ${research.sources.length} researched source${research.sources.length === 1 ? "" : "s"}...`);
+      const lessonDraft = await askAi([
+        {
+          role: "system",
+          content: [
+            "You are SparkPath's course lesson writer.",
+            "Convert the supplied research brief into a complete structured lesson.",
+            "Use only the research brief, course context, and source list. Do not add unsupported claims.",
+            "Write a substantial self-contained lesson, not a short summary.",
+            "Define terminology, explain why concepts work, connect ideas, show concrete examples, discuss tradeoffs, and include a worked example.",
+            "Return four to six sections. Each section should contain meaningful teaching detail, not bullet-point fragments.",
+            "Add common misconceptions, a practical exercise, and three knowledge-check questions with answers.",
+            "Do not include markdown links in fields. The UI displays source links separately.",
+            "Return only the structured JSON object.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: [
+            `Course: ${course.title}`,
+            `Level: ${course.level}`,
+            `Module: ${module?.title ?? "Course module"}`,
+            `Module skills: ${module?.skills.join(", ") ?? ""}`,
+            `Lesson: ${lesson.title}`,
+            `Lesson summary: ${lesson.summary}`,
+            `Objectives: ${lesson.objectives.join("; ")}`,
+            "",
+            `Research sources:\n${research.sources.map((source, index) => `${index + 1}. ${source.title} - ${source.url}`).join("\n") || "No source metadata returned."}`,
+            "",
+            `Research brief:\n${research.content.slice(0, 14000)}`,
           ].join("\n"),
         },
       ], courseLessonResponseFormat);
-      const lessonContent = parseCourseLesson(research.content, research.sources);
+      const lessonContent = parseCourseLesson(lessonDraft, research.sources);
       setCourseState((current) => ({
         ...current,
         courses: current.courses.map((item) => item.id === courseId ? {
@@ -3044,8 +3103,13 @@ function extractJson(content: string) {
 function parseStructuredJson(content: string) {
   try {
     return JSON.parse(content);
-  } catch {
-    return JSON.parse(extractJson(content));
+  } catch (initialError) {
+    try {
+      return JSON.parse(extractJson(content));
+    } catch (extractedError) {
+      const message = extractedError instanceof Error ? extractedError.message : initialError instanceof Error ? initialError.message : "Invalid JSON.";
+      throw new Error(`AI returned malformed structured data. This usually means the response was truncated. Try generating the lesson again. Details: ${message}`);
+    }
   }
 }
 

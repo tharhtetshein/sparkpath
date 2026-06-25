@@ -1890,15 +1890,6 @@ function DashboardPage(props: {
               </button>
             </div>
           </div>
-          {skillAnalysisCurrent && skillAnalysis.summary && (
-            <div className="skill-analysis-summary">
-              <strong>AI assessment</strong>
-              <p>{skillAnalysis.summary}</p>
-              {!!skillAnalysis.confidenceNotes.length && (
-                <ul>{skillAnalysis.confidenceNotes.map((note) => <li key={note}>{note}</li>)}</ul>
-              )}
-            </div>
-          )}
           {skillAnalysisSummaryOnly && (
             <p className="skill-analysis-notice">AI returned an assessment but no exact-quote skill nodes.</p>
           )}

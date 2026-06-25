@@ -145,6 +145,18 @@ type SkillAnalysisState = {
   analyzedAt: string;
 };
 
+type ParsedSkillAnalysis = Pick<SkillAnalysisState, "skills" | "summary" | "confidenceNotes">;
+
+type SkillAnalysisPartition = {
+  key: "github" | "resume" | "profile";
+  label: string;
+  profile: StudentInput;
+};
+
+type CompletedSkillAnalysisPartition = SkillAnalysisPartition & {
+  analysis: ParsedSkillAnalysis;
+};
+
 const initialInput: StudentInput = {
   name: "",
   headline: "",
@@ -470,55 +482,38 @@ export function App() {
     setSkillAnalysisBusy(true);
     setStatus(`${automatic ? "Analyzing new evidence" : "Refreshing skills"} with AI...`);
     try {
-      const content = await askAi([
-        {
-          role: "system",
-          content: [
-            "You are SparkPath's evidence-grounded career skills analyst.",
-            "Identify skills the student has actually demonstrated, not skills merely mentioned in a target job title.",
-            "Every skill must cite an exact sourceTitle from the supplied evidence and a short verbatim quote from that source.",
-            "Create the skill cards and their category labels yourself. Use specific skill names and specific category labels derived from the repositories and evidence.",
-            "Do not reuse a predefined category taxonomy. Invent concise category labels from the evidence.",
-            "The skills array is the data source for the visual skill graph. Do not rely on the summary to communicate skills.",
-            "Each evidence quote must be an exact contiguous phrase or sentence copied from the matching source content.",
-            "If you cannot provide an exact quote for a skill, omit that skill.",
-            "For GitHub evidence, repository language statistics, dependency manifests, config files, file paths, README excerpts, and recent commit messages are valid evidence of demonstrated technical work.",
-            "GitHub profile bio, stars, followers, or a technology name alone are weak evidence; score those low unless repository files or README text support the skill.",
-            "You may cite exact GitHub digest lines such as detected technologies, project files, dependency files, languages by bytes, or recent commit messages.",
-            "Do not invent experience, tools, outcomes, credentials, or proficiency.",
-            "Merge overlapping skills and use specific, employer-recognizable names such as React dashboard engineering, LLM developer tooling, local-first data visualization, or AI workflow automation when supported by evidence.",
-            "Category should be a concise AI-created label based only on the evidence.",
-            "Score evidence strength consistently: 35 exposure, 50 guided practice, 65 independent application, 80 repeated delivery or measured impact, 90 advanced repeated impact.",
-            "Prefer 4 to 10 strong skills. Return fewer or zero when evidence is limited.",
-            "The target role is context for relevance only and is never evidence.",
-            "The summary must describe only skills returned in the skills array. If the array is empty, say the evidence is insufficient for a verified skill graph.",
-          ].join(" "),
-        },
-        {
-          role: "user",
-          content: skillAnalysisBrief(profile),
-        },
-      ], skillAnalysisResponseFormat);
-
-      const parsed = parseAiSkillAnalysis(content, profile);
-      const githubPresent = hasGithubEvidence(profile);
-      const githubSkillCount = parsed.skills.filter((skill) => skill.evidence.some((item) => isGithubEvidenceTitle(profile, item.sourceTitle))).length;
-      const acceptedSkills = githubPresent && parsed.skills.length && !githubSkillCount ? [] : parsed.skills;
+      const partitions = skillAnalysisPartitions(profile);
+      const settled = await Promise.allSettled(partitions.map(async (partition) => {
+        const content = await askAi(skillAnalysisMessages(partition.profile, partition.label), skillAnalysisResponseFormat);
+        return {
+          ...partition,
+          analysis: parseAiSkillAnalysis(content, partition.profile),
+        };
+      }));
+      const analyses = settled.map((result, index) => {
+        if (result.status === "fulfilled") return result.value;
+        const partition = partitions[index];
+        return {
+          ...partition,
+          analysis: {
+            skills: existingSkillsForPartition(skillAnalysis.skills, partition.profile),
+            summary: "",
+            confidenceNotes: [`${partition.label} analysis failed: ${result.reason instanceof Error ? result.reason.message : "AI request failed."}`],
+          },
+        };
+      });
+      const merged = mergeSkillAnalyses(analyses);
       setSkillAnalysis({
-        ...parsed,
-        skills: acceptedSkills,
+        ...merged,
         signature,
         analyzedAt: new Date().toISOString(),
       });
-      const fallbackSkillCount = acceptedSkills.length ? 0 : analyzeStudent(profile).skills.length;
+      const githubSkillCount = merged.skills.filter((skill) => skill.evidence.some((item) => isGithubEvidenceTitle(profile, item.sourceTitle))).length;
+      const nonGithubSkillCount = merged.skills.filter((skill) => skill.evidence.some((item) => !isGithubEvidenceTitle(profile, item.sourceTitle))).length;
       setStatus(
-        acceptedSkills.length
-          ? `AI verified ${acceptedSkills.length} evidence-backed skill${acceptedSkills.length === 1 ? "" : "s"}${githubSkillCount ? `, including ${githubSkillCount} from GitHub` : ""}.`
-          : githubPresent && parsed.skills.length && !githubSkillCount
-            ? "AI returned resume-only skills and did not cite GitHub evidence, so the graph was not accepted. Refresh analysis after re-importing GitHub evidence."
-          : fallbackSkillCount
-            ? `AI returned an assessment without exact-quote skill nodes.`
-            : "AI could not verify skills from the current evidence. Add more detailed project or work examples.",
+        merged.skills.length
+          ? `AI verified ${merged.skills.length} skill${merged.skills.length === 1 ? "" : "s"}: ${githubSkillCount} citing GitHub and ${nonGithubSkillCount} citing resume/profile evidence.`
+          : "AI could not verify skills from the current evidence. Add more detailed project or work examples.",
       );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "AI skill analysis failed.");
@@ -1542,6 +1537,100 @@ function isGithubEvidenceTitle(input: StudentInput, title: string) {
   return input.sources.some((source) => source.title.toLowerCase() === title.toLowerCase() && (source.type === "github" || isGithubSourceTitle(source.title) || source.content.startsWith("GitHub")));
 }
 
+function skillAnalysisPartitions(input: StudentInput): SkillAnalysisPartition[] {
+  const githubSources = input.sources.filter((source) => source.type === "github" || isGithubSourceTitle(source.title) || source.content.startsWith("GitHub"));
+  const otherSources = input.sources.filter((source) => !githubSources.includes(source));
+  const partitions: SkillAnalysisPartition[] = [];
+
+  if (githubSources.length) {
+    partitions.push({
+      key: "github",
+      label: "GitHub repositories",
+      profile: { ...input, headline: "", links: "", sources: githubSources },
+    });
+  }
+  if (otherSources.length || input.headline.trim() || input.links.trim()) {
+    partitions.push({
+      key: otherSources.length ? "resume" : "profile",
+      label: otherSources.length ? "Resume and profile evidence" : "Profile evidence",
+      profile: { ...input, sources: otherSources },
+    });
+  }
+  return partitions.length ? partitions : [{ key: "profile", label: "Profile evidence", profile: input }];
+}
+
+function skillAnalysisMessages(profile: StudentInput, partitionLabel: string): AiMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        "You are SparkPath's evidence-grounded career skills analyst.",
+        `Analyze only the supplied ${partitionLabel} partition. Do not assume evidence from sources outside this partition.`,
+        "Identify skills the student has actually demonstrated, not skills merely mentioned in a target job title.",
+        "Every skill must cite an exact sourceTitle from the supplied evidence and a short verbatim quote from that source.",
+        "Create the skill cards and their category labels yourself. Use specific skill names and specific category labels derived from the evidence.",
+        "Do not reuse a predefined category taxonomy. Invent concise category labels from the evidence.",
+        "The skills array is the data source for the visual skill graph. Do not rely on the summary to communicate skills.",
+        "Each evidence quote must be an exact contiguous phrase or sentence copied from the matching source content.",
+        "If you cannot provide an exact quote for a skill, omit that skill.",
+        "For GitHub evidence, repository language statistics, dependency manifests, config files, file paths, README excerpts, source excerpts, and recent commit messages are valid evidence of demonstrated technical work.",
+        "GitHub profile bio, stars, followers, or a technology name alone are weak evidence; score those low unless repository files or README text support the skill.",
+        "Do not invent experience, tools, outcomes, credentials, or proficiency.",
+        "Merge overlapping skills within this partition and use specific, employer-recognizable names.",
+        "Category should be a concise AI-created label based only on the evidence.",
+        "Score evidence strength consistently: 35 exposure, 50 guided practice, 65 independent application, 80 repeated delivery or measured impact, 90 advanced repeated impact.",
+        "Prefer 3 to 8 strong skills. Return fewer or zero when evidence is limited.",
+        "The target role is context for relevance only and is never evidence.",
+        "The summary must describe only skills returned in the skills array. If the array is empty, say the evidence is insufficient.",
+      ].join(" "),
+    },
+    {
+      role: "user",
+      content: skillAnalysisBrief(profile),
+    },
+  ];
+}
+
+function existingSkillsForPartition(skills: Skill[], profile: StudentInput) {
+  const titles = new Set(skillEvidenceSources(profile).map((source) => source.title.toLowerCase()));
+  return skills.filter((skill) => skill.evidence.some((item) => titles.has(item.sourceTitle.toLowerCase())));
+}
+
+function mergeSkillAnalyses(partitions: CompletedSkillAnalysisPartition[]): ParsedSkillAnalysis {
+  const merged = new Map<string, Skill>();
+  partitions.forEach(({ analysis }) => {
+    analysis.skills.forEach((skill) => {
+      const key = skill.name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const current = merged.get(key);
+      if (!current) {
+        merged.set(key, skill);
+        return;
+      }
+      const evidence = uniqueBy(
+        [...current.evidence, ...skill.evidence],
+        (item) => `${item.sourceTitle.toLowerCase()}:${normalizeEvidenceText(item.quote)}`,
+      ).slice(0, 5);
+      merged.set(key, {
+        ...(skill.score > current.score ? skill : current),
+        score: Math.max(current.score, skill.score),
+        terms: unique([...current.terms, ...skill.terms]).slice(0, 10),
+        evidence,
+      });
+    });
+  });
+
+  return {
+    skills: Array.from(merged.values()).sort((left, right) => right.score - left.score).slice(0, 16),
+    summary: partitions
+      .filter(({ analysis }) => analysis.summary)
+      .map(({ label, analysis }) => `${label}: ${analysis.summary}`)
+      .join(" "),
+    confidenceNotes: partitions
+      .flatMap(({ label, analysis }) => analysis.confidenceNotes.map((note) => `${label}: ${note}`))
+      .slice(0, 6),
+  };
+}
+
 function questProfileBrief(input: StudentInput, result: ReturnType<typeof analyzeStudent>) {
   const skills = result.skills
     .slice(0, 8)
@@ -1973,6 +2062,16 @@ function simpleHash(value: string) {
 
 function unique<T>(items: T[]) {
   return Array.from(new Set(items));
+}
+
+function uniqueBy<T>(items: T[], keyFor: (item: T) => string) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = keyFor(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function hasNewProgress(baseline: RepoProgressSnapshot, snapshot: RepoProgressSnapshot) {

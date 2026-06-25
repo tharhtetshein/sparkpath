@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import {
-  ArrowRight,
   Award,
   BadgeCheck,
   BookMarked,
@@ -553,7 +552,6 @@ export function App() {
   const [courseBusy, setCourseBusy] = useState(false);
   const [lessonBusy, setLessonBusy] = useState("");
   const [exerciseReviewBusy, setExerciseReviewBusy] = useState("");
-  const [manualNote, setManualNote] = useState("");
   const [githubRepo, setGithubRepo] = useState("");
   const [jobQuery, setJobQuery] = useState("");
   const [jobCountry, setJobCountry] = useState("Singapore");
@@ -565,7 +563,6 @@ export function App() {
   const [questBusy, setQuestBusy] = useState(false);
   const [status, setStatus] = useState("Dashboard ready.");
   const [busy, setBusy] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const resumeInputRef = useRef<HTMLInputElement>(null);
   const lastAutoJobSearchRef = useRef("");
   const lastAutoSkillAnalysisRef = useRef("");
@@ -730,21 +727,6 @@ export function App() {
     }
   }
 
-  function addManualNote() {
-    if (!manualNote.trim()) return;
-    addSource({
-      id: crypto.randomUUID(),
-      type: "manual",
-      title: `Manual evidence ${input.sources.filter((source) => source.type === "manual").length + 1}`,
-      content: manualNote.trim(),
-      trustLevel: "self_reported",
-      trustReason: "Entered directly by the student and not independently checked.",
-      createdAt: new Date().toISOString(),
-    });
-    setManualNote("");
-    setStatus("Added manual evidence.");
-  }
-
   async function analyzeSkillsWithAi(profile = input, automatic = false) {
     if (!hasSkillEvidence(profile)) {
       setStatus("Add a headline, portfolio link, resume, GitHub source, certificate, or evidence note before AI skill analysis.");
@@ -756,13 +738,17 @@ export function App() {
     setStatus(`${automatic ? "Analyzing new evidence" : "Refreshing skills"} with AI...`);
     try {
       const partitions = skillAnalysisPartitions(profile);
-      const settled = await Promise.allSettled(partitions.map(async (partition) => {
-        const content = await askAi(skillAnalysisMessages(partition.profile, partition.label), skillAnalysisResponseFormat);
+      const settled = await mapSettledWithConcurrency(partitions, 3, async (partition) => {
+        const content = await askAi(
+          skillAnalysisMessages(partition.profile, partition.label),
+          skillAnalysisResponseFormat,
+          { maxOutputTokens: 5000 },
+        );
         return {
           ...partition,
           analysis: parseAiSkillAnalysis(content, partition.profile),
         };
-      }));
+      });
       const analyses = settled.map((result, index) => {
         if (result.status === "fulfilled") return result.value;
         const partition = partitions[index];
@@ -1608,17 +1594,13 @@ export function App() {
               questGame={questGame}
               busy={busy}
               questBusy={questBusy}
-              manualNote={manualNote}
               githubRepo={githubRepo}
               projectProgress={projectProgress}
-              fileInputRef={fileInputRef}
               resumeInputRef={resumeInputRef}
               onFieldChange={updateField}
-              onManualNoteChange={setManualNote}
               onGithubRepoChange={setGithubRepo}
               onFiles={handleFiles}
               onGithubImport={handleGithubImport}
-              onAddManualNote={addManualNote}
               onRemoveSource={removeSource}
               onAnalyzeSkills={() => analyzeSkillsWithAi(input, false)}
               onGenerateQuestBoard={generateQuestBoard}
@@ -1785,17 +1767,13 @@ function DashboardPage(props: {
   questGame: QuestGameState;
   busy: boolean;
   questBusy: boolean;
-  manualNote: string;
   githubRepo: string;
   projectProgress: Record<string, ProjectProgress>;
-  fileInputRef: RefObject<HTMLInputElement>;
   resumeInputRef: RefObject<HTMLInputElement>;
   onFieldChange: (field: keyof Pick<StudentInput, "name" | "headline" | "targetRole" | "links">, value: string) => void;
-  onManualNoteChange: (value: string) => void;
   onGithubRepoChange: (value: string) => void;
   onFiles: (files: FileList | null) => void;
   onGithubImport: () => void;
-  onAddManualNote: () => void;
   onRemoveSource: (id: string) => void;
   onAnalyzeSkills: () => void;
   onGenerateQuestBoard: () => void;
@@ -1821,17 +1799,13 @@ function DashboardPage(props: {
     questGame,
     busy,
     questBusy,
-    manualNote,
     githubRepo,
     projectProgress,
-    fileInputRef,
     resumeInputRef,
     onFieldChange,
-    onManualNoteChange,
     onGithubRepoChange,
     onFiles,
     onGithubImport,
-    onAddManualNote,
     onRemoveSource,
     onAnalyzeSkills,
     onGenerateQuestBoard,
@@ -1900,12 +1874,6 @@ function DashboardPage(props: {
           <button type="button" onClick={() => resumeInputRef.current?.click()}><FileText size={17} />Choose files</button>
           <small>PDF, DOCX, TXT, MD, CSV, and JSON.</small>
         </article>
-      </section>
-
-      <section className="note-strip">
-        <input ref={fileInputRef} className="hidden-file" type="file" multiple accept=".txt,.md,.csv,.json,.pdf,.docx" onChange={(event) => onFiles(event.target.files)} />
-        <textarea value={manualNote} onChange={(event) => onManualNoteChange(event.target.value)} rows={3} placeholder="Paste achievements, project notes, competition results, leadership work, or course reflections." />
-        <button type="button" onClick={onAddManualNote} disabled={!manualNote.trim()}><ArrowRight size={17} />Add evidence</button>
       </section>
 
       <section className="analysis-grid" aria-label="AI analysis">
@@ -2951,21 +2919,67 @@ function skillAnalysisPartitions(input: StudentInput): SkillAnalysisPartition[] 
   const otherSources = input.sources.filter((source) => !githubSources.includes(source));
   const partitions: SkillAnalysisPartition[] = [];
 
-  if (githubSources.length) {
-    partitions.push({
-      key: "github",
-      label: "GitHub repositories",
-      profile: { ...input, headline: "", links: "", sources: githubSources },
+  githubSources.forEach((source, sourceIndex) => {
+    const evidenceBatches = githubEvidenceBatches(source.content);
+    evidenceBatches.forEach((content, batchIndex) => {
+      partitions.push({
+        key: "github",
+        label: `GitHub repositories ${sourceIndex + 1}.${batchIndex + 1} of ${githubSources.length}.${evidenceBatches.length}`,
+        profile: {
+          ...input,
+          headline: "",
+          links: "",
+          sources: [{ ...source, content }],
+        },
+      });
     });
-  }
-  if (otherSources.length || input.headline.trim() || input.links.trim()) {
+  });
+  otherSources.forEach((source, index) => {
     partitions.push({
-      key: otherSources.length ? "resume" : "profile",
-      label: otherSources.length ? "Resume, profile, course, and quest evidence" : "Profile evidence",
-      profile: { ...input, sources: otherSources },
+      key: "resume",
+      label: `${source.title} evidence`,
+      profile: { ...input, headline: "", links: "", sources: [source] },
+    });
+  });
+  if (input.headline.trim() || input.links.trim()) {
+    partitions.push({
+      key: "profile",
+      label: "Profile statement and links",
+      profile: { ...input, sources: [] },
     });
   }
   return partitions.length ? partitions : [{ key: "profile", label: "Profile evidence", profile: input }];
+}
+
+function githubEvidenceBatches(content: string) {
+  const detailMarker = "Detailed repository evidence:";
+  const markerIndex = content.indexOf(detailMarker);
+  if (markerIndex < 0) return chunkTextByLines(content, 22000);
+
+  const overview = content.slice(0, markerIndex).trim();
+  const detailed = content.slice(markerIndex + detailMarker.length).trim();
+  const batches = overview ? chunkTextByLines(overview, 22000) : [];
+  const repositoryBlocks = detailed
+    .split(/\n\s*---\s*\n/g)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  repositoryBlocks.forEach((block) => batches.push(...chunkTextByLines(block, 22000)));
+  return batches.length ? batches : [content];
+}
+
+function chunkTextByLines(content: string, maxCharacters: number) {
+  const chunks: string[] = [];
+  let current = "";
+  content.split("\n").forEach((line) => {
+    if (current && current.length + line.length + 1 > maxCharacters) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current = current ? `${current}\n${line}` : line;
+    }
+  });
+  if (current.trim()) chunks.push(current);
+  return chunks;
 }
 
 function skillAnalysisMessages(profile: StudentInput, partitionLabel: string): AiMessage[] {
@@ -2985,10 +2999,12 @@ function skillAnalysisMessages(profile: StudentInput, partitionLabel: string): A
         "For GitHub evidence, repository language statistics, dependency manifests, config files, file paths, README excerpts, source excerpts, and recent commit messages are valid evidence of demonstrated technical work.",
         "GitHub profile bio, stars, followers, or a technology name alone are weak evidence; score those low unless repository files or README text support the skill.",
         "Do not invent experience, tools, outcomes, credentials, or proficiency.",
-        "Merge overlapping skills within this partition and use specific, employer-recognizable names.",
+        "Merge only genuinely overlapping skills within this partition and use specific, employer-recognizable names.",
         "Category should be a concise AI-created label based only on the evidence.",
         "Score evidence strength consistently: 35 exposure, 50 guided practice, 65 independent application, 80 repeated delivery or measured impact, 90 advanced repeated impact.",
-        "Prefer 3 to 8 strong skills. Return fewer or zero when evidence is limited.",
+        "Return every distinct demonstrated skill supported by this evidence. Do not impose a preferred count or omit a supported skill merely to keep the response short.",
+        "Separate materially different capabilities, but do not create duplicates or trivial variations of the same skill.",
+        "For a GitHub repository, inspect all supplied README, language, dependency, configuration, file-tree, source-code, and commit evidence before deciding which skills are demonstrated.",
         "The target role is context for relevance only and is never evidence.",
         "The summary must describe only skills returned in the skills array. If the array is empty, say the evidence is insufficient.",
       ].join(" "),
@@ -3018,18 +3034,18 @@ function mergeSkillAnalyses(partitions: CompletedSkillAnalysisPartition[]): Pars
       const evidence = uniqueBy(
         [...current.evidence, ...skill.evidence],
         (item) => `${item.sourceTitle.toLowerCase()}:${normalizeEvidenceText(item.quote)}`,
-      ).slice(0, 5);
+      );
       merged.set(key, {
         ...(skill.score > current.score ? skill : current),
         score: Math.max(current.score, skill.score),
-        terms: unique([...current.terms, ...skill.terms]).slice(0, 10),
+        terms: unique([...current.terms, ...skill.terms]),
         evidence,
       });
     });
   });
 
   return {
-    skills: Array.from(merged.values()).sort((left, right) => right.score - left.score).slice(0, 16),
+    skills: Array.from(merged.values()).sort((left, right) => right.score - left.score),
     summary: partitions
       .filter(({ analysis }) => analysis.summary)
       .map(({ label, analysis }) => `${label}: ${analysis.summary}`)
@@ -3187,8 +3203,7 @@ function parseAiSkillAnalysis(content: string, input: StudentInput): Pick<SkillA
       };
     })
     .filter((skill: Skill | null): skill is Skill => Boolean(skill))
-    .sort((left: Skill, right: Skill) => right.score - left.score)
-    .slice(0, 10);
+    .sort((left: Skill, right: Skill) => right.score - left.score);
 
   return {
     skills,
@@ -3274,7 +3289,6 @@ function scoreEvidenceLine(line: string, keywords: string[]) {
 function skillEvidenceSources(input: StudentInput) {
   const sources = input.sources
     .filter((source) => source.content.trim())
-    .slice(0, 10)
     .map((source) => ({ title: source.title, content: source.content }));
   const profileStatement = [input.headline, input.links].filter((value) => value.trim()).join("\n");
   return profileStatement
@@ -3768,6 +3782,32 @@ function uniqueBy<T>(items: T[], keyFor: (item: T) => string) {
     seen.add(key);
     return true;
   });
+}
+
+async function mapSettledWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<Array<PromiseSettledResult<R>>> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = { status: "fulfilled", value: await mapper(items[index], index) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, () => worker()),
+  );
+  return results;
 }
 
 function hasNewProgress(baseline: RepoProgressSnapshot, snapshot: RepoProgressSnapshot) {

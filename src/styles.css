@@ -298,7 +298,6 @@ h1 {
 
 .profile-card,
 .drop-card,
-.note-strip,
 .panel,
 .match-console,
 .search-console,
@@ -483,18 +482,6 @@ textarea:focus {
 .icon-button {
   min-width: 42px;
   padding: 0;
-}
-
-.note-strip {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 12px;
-  align-items: stretch;
-  padding: 14px;
-}
-
-.note-strip button {
-  align-self: end;
 }
 
 .analysis-grid {
@@ -2643,7 +2630,6 @@ pre {
   .rail-nav,
   .quest-panel-head,
   .skill-panel-head,
-  .note-strip,
   .match-console,
   .search-console,
   .skill-row,

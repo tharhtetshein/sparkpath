@@ -411,8 +411,7 @@ type GithubPageResult<T> = {
   truncated: boolean;
 };
 
-const githubProfileDetailRepoLimit = 10;
-const githubProfileRepoPageLimit = 5;
+const githubRepoAnalysisConcurrency = 4;
 
 class GithubApiError extends Error {
   status: number;
@@ -456,22 +455,24 @@ async function importGithubProfileEvidence(username: string, token: string): Pro
       `https://api.github.com/users/${username}/repos?sort=updated&per_page=100`,
       token,
       `repos for ${username}`,
-      githubProfileRepoPageLimit,
     ),
   ]);
   const repos = repoPages.items;
-  const selectedRepos = selectGithubProfileRepos(repos).slice(0, githubProfileDetailRepoLimit);
-  const repoEvidenceResults = await Promise.allSettled(
-    selectedRepos.map((repo) => buildGithubRepoEvidence(repo, token, {
-      readmeLimit: 5200,
-      maxManifestFiles: 3,
+  const selectedRepos = selectGithubProfileRepos(repos);
+  const repoEvidenceResults = await mapSettledWithConcurrency(
+    selectedRepos,
+    githubRepoAnalysisConcurrency,
+    (repo) => buildGithubRepoEvidence(repo, token, {
+      readmeLimit: 4200,
+      maxManifestFiles: 4,
       maxSourceFiles: 1,
-    })),
+    }),
   );
   const repoEvidence = repoEvidenceResults
     .filter((result): result is PromiseFulfilledResult<GithubRepoEvidence> => result.status === "fulfilled")
     .map((result) => result.value);
-  const technologies = unique(repoEvidence.flatMap((item) => item.technologies)).slice(0, 18);
+  const technologies = unique(repoEvidence.flatMap((item) => item.technologies));
+  const failedRepoCount = repoEvidenceResults.filter((result) => result.status === "rejected").length;
 
   return {
     id: crypto.randomUUID(),
@@ -488,6 +489,7 @@ async function importGithubProfileEvidence(username: string, token: string): Pro
       `Bio: ${user.bio ?? "No bio"}`,
       `Public repos: ${user.public_repos ?? 0}`,
       `Imported detailed repositories for AI skill analysis: ${selectedRepos.map((repo) => repo.full_name).join(", ") || "None"}`,
+      `Detailed repository analysis completed: ${repoEvidence.length} of ${selectedRepos.length}${failedRepoCount ? `; ${failedRepoCount} could not be read` : ""}`,
       `Detected technologies across imported repos: ${technologies.join(", ") || "Not enough public repository metadata"}`,
       "",
       repoEvidence.map((item) => item.digest).join("\n"),
@@ -566,21 +568,17 @@ async function githubJsonWithResponse<T>(url: string, token: string, label: stri
   return { data: await response.json() as T, response };
 }
 
-async function githubPagedJson<T>(url: string, token: string, label: string, maxPages: number): Promise<GithubPageResult<T>> {
+async function githubPagedJson<T>(url: string, token: string, label: string): Promise<GithubPageResult<T>> {
   const items: T[] = [];
-  let truncated = false;
 
-  for (let page = 1; page <= maxPages; page += 1) {
+  for (let page = 1; ; page += 1) {
     const pageUrl = `${url}${url.includes("?") ? "&" : "?"}page=${page}`;
     const { data, response } = await githubJsonWithResponse<T[]>(pageUrl, token, `${label} page ${page}`);
     items.push(...data);
 
     const hasNextPage = /rel="next"/i.test(response.headers.get("link") ?? "");
-    if (!hasNextPage) return { items, truncated };
-    truncated = page === maxPages;
+    if (!hasNextPage) return { items, truncated: false };
   }
-
-  return { items, truncated };
 }
 
 async function githubRaw(fullName: string, path: string, branch: string, token: string): Promise<string> {
@@ -666,10 +664,7 @@ function normalizeGithubTarget(input: string): GithubTarget {
 }
 
 function selectGithubProfileRepos(repos: GithubRepo[]) {
-  const usable = repos.filter((repo) => !repo.archived);
-  const nonForks = usable.filter((repo) => !repo.fork);
-  const pool = nonForks.length >= 3 ? nonForks : usable;
-  return [...pool].sort((left, right) => githubRepoEvidenceScore(right) - githubRepoEvidenceScore(left));
+  return [...repos].sort((left, right) => githubRepoEvidenceScore(right) - githubRepoEvidenceScore(left));
 }
 
 function githubRepoEvidenceScore(repo: GithubRepo) {
@@ -687,7 +682,7 @@ function formatGithubRepoInventory(repos: GithubRepo[], publicRepoCount = repos.
   });
   const heading = [
     `Loaded ${repos.length} of ${publicRepoCount} public repos.`,
-    truncated ? `Repo pagination stopped after ${githubProfileRepoPageLimit} pages to avoid excessive GitHub API usage.` : "",
+    truncated ? "GitHub repository pagination was incomplete." : "",
   ].filter(Boolean).join(" ");
   const lines = sortedRepos.map((repo) => {
     const flags = [repo.fork ? "fork" : "", repo.archived ? "archived" : ""].filter(Boolean).join(", ");
@@ -801,7 +796,33 @@ function detectGithubTechnologies(repo: GithubRepo, languages: Record<string, nu
   signalMap.forEach(([pattern, label]) => {
     if (pattern.test(joinedFiles) || pattern.test(pathText)) signals.add(label);
   });
-  return unique(Array.from(signals).map((value) => cleanGithubText(value)).filter(Boolean)).slice(0, 24);
+  return unique(Array.from(signals).map((value) => cleanGithubText(value)).filter(Boolean));
+}
+
+async function mapSettledWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<Array<PromiseSettledResult<R>>> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = { status: "fulfilled", value: await mapper(items[index], index) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, () => worker()),
+  );
+  return results;
 }
 
 function formatGithubLanguages(languages: Record<string, number>) {

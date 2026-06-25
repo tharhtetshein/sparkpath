@@ -54,7 +54,7 @@ const STORAGE_KEY = "sparkpath-workspace-v1";
 const PROGRESS_KEY = "sparkpath-project-progress-v1";
 const QUEST_KEY = "sparkpath-ai-quest-board-v1";
 const APPLICATIONS_KEY = "sparkpath-job-applications-v1";
-const SKILL_ANALYSIS_KEY = "sparkpath-ai-skill-analysis-v2";
+const SKILL_ANALYSIS_KEY = "sparkpath-ai-skill-analysis-v3";
 const COURSES_KEY = "sparkpath-ai-courses-v1";
 const COURSE_MASTERY_SCORE = 75;
 
@@ -1810,7 +1810,7 @@ function SkillReviewSections({
 }) {
   const profileInformation = findings.filter((finding) => ["education", "profile_fact", "credential"].includes(finding.kind));
   const evidenceGaps = findings.filter((finding) => finding.kind === "evidence_gap");
-  const reviewItems = findings.filter((finding) => ["needs_review", "rejected"].includes(finding.kind));
+  const reviewItems = findings.filter((finding) => finding.kind === "needs_review");
 
   if (!findings.length) return null;
 
@@ -3135,12 +3135,20 @@ function githubEvidenceBatches(content: string) {
 
   const overview = content.slice(0, markerIndex).trim();
   const detailed = content.slice(markerIndex + detailMarker.length).trim();
-  const batches = overview ? chunkTextByLines(overview, 22000) : [];
+  const profileContext = overview
+    .split("\n")
+    .filter((line) => /^(GitHub profile:|Username:|Bio:|Public repos:)/i.test(line.trim()))
+    .join("\n");
+  const batches: string[] = [];
   const repositoryBlocks = detailed
     .split(/\n\s*---\s*\n/g)
     .map((block) => block.trim())
     .filter(Boolean);
-  repositoryBlocks.forEach((block) => batches.push(...chunkTextByLines(block, 22000)));
+  repositoryBlocks.forEach((block) => {
+    chunkTextByLines(block, 22000).forEach((chunk) => {
+      batches.push(profileContext ? `${profileContext}\n\n${chunk}` : chunk);
+    });
+  });
   return batches.length ? batches : [content];
 }
 
@@ -3443,19 +3451,51 @@ function deterministicSkillScreen(skill: Skill, input: StudentInput): { kind: Sk
   if (/\b(built with passion|passionate|enthusiast|interested in|aspiring|would like to|bio:|no bio)\b/i.test(evidence)) {
     return { kind: "needs_review", reason: "The cited statement expresses interest or context but does not demonstrate this capability." };
   }
+  if (/\b(commit activity|documentation\/readme contents|command of repository file structure|technology awareness|language statistics|dependency management and installation guidance)\b/i.test(name)) {
+    return { kind: "rejected", reason: "This names an evidence artifact or repository characteristic rather than a usable capability." };
+  }
 
   const sourceIsGithub = skill.evidence.some((item) => isGithubEvidenceTitle(input, item.sourceTitle));
-  const repositoryEvidence = /\brepository\b.+\b(readme says|languages by bytes|dependency or config files include|project files include|recent commit messages include|representative source|file:|detected technologies)\b/i.test(evidence);
-  if (sourceIsGithub && !repositoryEvidence) {
+  const githubEvidenceLevel = classifyGithubEvidence(skill);
+  if (sourceIsGithub && githubEvidenceLevel === "metadata") {
     return { kind: "needs_review", reason: "GitHub profile metadata alone is too weak; repository-level code, dependency, README, test, or commit evidence is required." };
   }
 
   const demonstratedAction = /\b(built|implemented|developed|created|designed|tested|deployed|configured|integrated|maintained|authored|optimized|debugged|analyzed|modeled|managed|led|delivered|used|worked with)\b/i.test(evidence);
   const artifactSignal = /\b(package\.json|requirements\.txt|pyproject\.toml|dockerfile|workflow|test|src\/|app\/|api|component|database|schema|commit|repository|project|application|system)\b/i.test(evidence);
+  const explicitSelfReportedSkill = !sourceIsGithub && /^[•*\-\s]*(programming languages|frameworks|frontend|backend|databases?|software engineering|ai|quality assurance|cyber ?security)\s*:/i.test(evidence.trim());
+  if (explicitSelfReportedSkill) return null;
   if (!demonstratedAction && !artifactSignal) {
     return { kind: "needs_review", reason: "The evidence names a topic but does not clearly show an action, implementation, or produced artifact." };
   }
   return null;
+}
+
+function classifyGithubEvidence(skill: Skill): "direct_artifact" | "implementation_statement" | "metadata" {
+  const evidence = skill.evidence.map((item) => item.quote).join("\n");
+  if (
+    /(^|\n)\s*(import|from|export|const|let|var|function|class|interface|type|public|private|protected|using|def|async|await)\b/im.test(evidence)
+    || /\b(src|app|server|api|components?|tests?|patterns?|models?|controllers?|routes?|lib)\/[\w./-]+\.(tsx?|jsx?|py|cs|java|kt|dart|go|rs|php|rb|sql)\b/i.test(evidence)
+    || /\b(package\.json|requirements\.txt|pyproject\.toml|dockerfile|docker-compose|vite\.config|next\.config|\.github\/workflows)\b/i.test(evidence)
+    || /\b(dependencies|devDependencies|scripts)\b/i.test(evidence)
+  ) {
+    return "direct_artifact";
+  }
+  if (
+    /\brepository\b.+\b(readme says|dependency or config files include|project files include|recent commit messages include|representative source file excerpts)\b/i.test(evidence)
+    || /\b(built|implemented|developed|created|designed|tested|deployed|configured|integrated|stores?|uses?|provides?|combines?)\b/i.test(evidence)
+  ) {
+    return "implementation_statement";
+  }
+  return "metadata";
+}
+
+function deterministicEvidenceStrength(skill: Skill) {
+  const level = classifyGithubEvidence(skill);
+  const evidenceCount = skill.evidence.length;
+  if (level === "direct_artifact") return Math.min(82, 62 + Math.max(0, evidenceCount - 1) * 5);
+  if (level === "implementation_statement") return Math.min(68, 48 + Math.max(0, evidenceCount - 1) * 5);
+  return 35;
 }
 
 function createSkillFinding(skill: Skill, kind: SkillFindingKind, reason: string): SkillFinding {
@@ -3475,7 +3515,10 @@ function skillValidationMessages(skills: Skill[], partitionLabel: string): AiMes
         "You are an independent evidence-entailment validator. You did not generate these candidates.",
         "Decide whether each exact quote demonstrates that the student performed the named capability.",
         "A technology mention, URL, biography, aspiration, education status, certificate title, repository name, topic, star count, or generic praise is not sufficient.",
-        "For GitHub, require repository-level implementation evidence such as source files, dependencies, configuration, tests, an implementation README statement, or implementation-related commits.",
+        "For resume evidence, a clearly labelled skills section is acceptable only as self-reported exposure with evidenceStrength 35. Project descriptions showing implementation can score higher.",
+        "For GitHub, direct source-code excerpts, imports, implementation file paths, dependencies, configuration, tests, design-pattern files, an implementation README statement, or implementation-related commits are valid repository-level evidence.",
+        "A quoted import statement or a specific source path tied to the named capability is concrete implementation evidence, not profile metadata.",
+        "Do not demand deployment, runtime proof, or multiple files when a direct code excerpt already entails the capability.",
         "Use verified only when the evidence directly supports a usable capability.",
         "Use needs_review when the claim is plausible but evidence is ambiguous or incomplete.",
         "Use reject for non-skills, negative findings, or unsupported claims.",
@@ -3491,6 +3534,7 @@ function skillValidationMessages(skills: Skill[], partitionLabel: string): AiMes
         JSON.stringify(skills.map((skill) => ({
           name: skill.name,
           category: skill.category,
+          deterministicEvidenceType: classifyGithubEvidence(skill),
           evidence: skill.evidence,
         }))),
       ].join("\n\n"),
@@ -3515,9 +3559,19 @@ function applySkillValidation(
     const classification = cleanText(verdict?.classification, 30);
     const reason = cleanText(verdict?.reason, 240) || "Independent validation did not provide a sufficient justification.";
     const evidenceStrength = Math.max(0, Math.min(100, Math.round(Number(verdict?.evidenceStrength ?? 0))));
+    const deterministicStrength = deterministicEvidenceStrength(skill);
+    const directArtifact = classifyGithubEvidence(skill) === "direct_artifact";
+    const explicitResumeSkill = skill.evidence.some((item) => (
+      !/github/i.test(item.sourceTitle)
+      && /^[•*\-\s]*(programming languages|frameworks|frontend|backend|databases?|software engineering|ai|quality assurance|cyber ?security)\s*:/i.test(item.quote.trim())
+    ));
 
-    if (decision === "verified" && classification === "demonstrated_skill" && evidenceStrength >= 35) {
-      verified.push({ ...skill, score: evidenceStrength });
+    if (
+      (decision === "verified" && classification === "demonstrated_skill" && evidenceStrength >= 35)
+      || (directArtifact && classification !== "education" && classification !== "profile_fact" && classification !== "credential" && classification !== "evidence_gap")
+      || (explicitResumeSkill && !["education", "profile_fact", "credential", "evidence_gap"].includes(classification))
+    ) {
+      verified.push({ ...skill, score: explicitResumeSkill ? Math.max(35, evidenceStrength) : Math.max(evidenceStrength, deterministicStrength) });
       return;
     }
 
@@ -3528,7 +3582,7 @@ function applySkillValidation(
         : classification === "credential"
           ? "credential"
           : classification === "evidence_gap"
-            ? "evidence_gap"
+            ? "needs_review"
             : decision === "reject"
               ? "rejected"
               : "needs_review";

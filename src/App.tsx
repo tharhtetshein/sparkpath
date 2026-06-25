@@ -183,6 +183,27 @@ type CourseVideo = {
   authorName?: string;
 };
 
+type CourseExerciseImage = {
+  name: string;
+  dataUrl: string;
+};
+
+type CourseExerciseReview = {
+  verdict: "correct" | "partly_correct" | "needs_revision";
+  score: number;
+  feedback: string;
+  strengths: string[];
+  improvements: string[];
+  reviewedAt: string;
+};
+
+type CourseExerciseSubmission = {
+  text: string;
+  image?: CourseExerciseImage;
+  review?: CourseExerciseReview;
+  submittedAt: string;
+};
+
 type CourseLessonContent = {
   introduction: string;
   sections: Array<{
@@ -209,6 +230,7 @@ type CourseLesson = {
   objectives: string[];
   estimatedMinutes: number;
   content?: CourseLessonContent;
+  exerciseSubmission?: CourseExerciseSubmission;
   completedAt?: string;
 };
 
@@ -423,6 +445,31 @@ const courseLessonResponseFormat: AiResponseFormat = {
   },
 };
 
+const exerciseReviewResponseFormat: AiResponseFormat = {
+  name: "course_exercise_review",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["verdict", "score", "feedback", "strengths", "improvements"],
+    properties: {
+      verdict: {
+        type: "string",
+        enum: ["correct", "partly_correct", "needs_revision"],
+      },
+      score: { type: "integer" },
+      feedback: { type: "string" },
+      strengths: {
+        type: "array",
+        items: { type: "string" },
+      },
+      improvements: {
+        type: "array",
+        items: { type: "string" },
+      },
+    },
+  },
+};
+
 const questRanks: QuestRank[] = [
   {
     name: "Starter",
@@ -474,6 +521,7 @@ export function App() {
   const [courseDepth, setCourseDepth] = useState<CourseDepth>("Standard");
   const [courseBusy, setCourseBusy] = useState(false);
   const [lessonBusy, setLessonBusy] = useState("");
+  const [exerciseReviewBusy, setExerciseReviewBusy] = useState("");
   const [manualNote, setManualNote] = useState("");
   const [githubRepo, setGithubRepo] = useState("");
   const [jobQuery, setJobQuery] = useState("");
@@ -1103,6 +1151,133 @@ export function App() {
       : `Lesson reopened. ${progress.percent}% of the course remains complete.`);
   }
 
+  async function saveLessonExerciseSubmission(courseId: string, lessonId: string, text: string, imageFile?: File | null) {
+    const course = courseState.courses.find((item) => item.id === courseId);
+    const lesson = course?.modules.flatMap((module) => module.lessons).find((item) => item.id === lessonId);
+    if (!course || !lesson) return;
+    if (!text.trim() && !imageFile && !lesson.exerciseSubmission?.image) {
+      setStatus("Type an answer or attach a picture before saving the exercise.");
+      return;
+    }
+
+    setBusy(true);
+    setStatus(`Saving exercise answer for ${lesson.title}...`);
+    try {
+      const image = imageFile
+        ? { name: imageFile.name, dataUrl: await compressImage(imageFile, 1600, 0.82) }
+        : lesson.exerciseSubmission?.image;
+      const submittedAt = new Date().toISOString();
+      const exerciseSubmission: CourseExerciseSubmission = {
+        text: text.trim(),
+        ...(image ? { image } : {}),
+        submittedAt,
+      };
+
+      setCourseState((current) => ({
+        ...current,
+        courses: current.courses.map((item) => item.id === courseId ? {
+          ...item,
+          modules: item.modules.map((module) => ({
+            ...module,
+            lessons: module.lessons.map((candidate) => candidate.id === lessonId ? { ...candidate, exerciseSubmission } : candidate),
+          })),
+        } : item),
+      }));
+      setStatus("Exercise answer saved.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not save exercise answer.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reviewLessonExerciseSubmission(courseId: string, lessonId: string) {
+    const course = courseState.courses.find((item) => item.id === courseId);
+    const lesson = course?.modules.flatMap((module) => module.lessons).find((item) => item.id === lessonId);
+    const submission = lesson?.exerciseSubmission;
+    if (!course || !lesson?.content || !submission || (!submission.text.trim() && !submission.image)) {
+      setStatus("Save a typed answer or picture before asking AI to check it.");
+      return;
+    }
+
+    setExerciseReviewBusy(lessonId);
+    setStatus(`Checking exercise answer for ${lesson.title}...`);
+    try {
+      const referenceNotes = [
+        lesson.content.introduction,
+        ...lesson.content.sections.map((section) => `${section.heading}: ${section.body}`),
+        `Worked example: ${lesson.content.workedExample}`,
+        `Key takeaways: ${lesson.content.keyTakeaways.join("; ")}`,
+      ].join("\n\n").slice(0, 12000);
+      const userContent: Exclude<AiMessageContent, string> = [
+        {
+          type: "text",
+          text: [
+            `Course: ${course.title}`,
+            `Lesson: ${lesson.title}`,
+            `Lesson objectives: ${lesson.objectives.join("; ")}`,
+            `Practical exercise prompt: ${lesson.content.exercise}`,
+            "",
+            `Saved typed answer:\n${submission.text || "No typed answer supplied."}`,
+            "",
+            `Lesson reference notes:\n${referenceNotes}`,
+            "",
+            "Evaluate whether the student's answer or picture correctly addresses the exercise. If the image is present, inspect it as part of the answer.",
+          ].join("\n"),
+        },
+      ];
+      if (submission.image) {
+        userContent.push({
+          type: "image_url",
+          image_url: { url: submission.image.dataUrl, detail: "auto" },
+        });
+      }
+
+      const content = await askAi([
+        {
+          role: "system",
+          content: [
+            "You are SparkPath's exercise reviewer.",
+            "Judge the student's submitted exercise answer against the lesson exercise and lesson reference notes.",
+            "Be strict but helpful. Do not require exact wording when the concept is correct.",
+            "If the answer is incomplete, identify the smallest concrete fix that would make it correct.",
+            "If the submission is an image, review visible work only and say when something cannot be verified.",
+            "Return only the structured review object.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: userContent,
+        },
+      ], exerciseReviewResponseFormat, { maxOutputTokens: 1400 });
+      const review = parseExerciseReview(content);
+      setCourseState((current) => ({
+        ...current,
+        courses: current.courses.map((item) => item.id === courseId ? {
+          ...item,
+          modules: item.modules.map((module) => ({
+            ...module,
+            lessons: module.lessons.map((candidate) => {
+              if (candidate.id !== lessonId || !candidate.exerciseSubmission) return candidate;
+              return {
+                ...candidate,
+                exerciseSubmission: {
+                  ...candidate.exerciseSubmission,
+                  review,
+                },
+              };
+            }),
+          })),
+        } : item),
+      }));
+      setStatus(`AI review complete: ${exerciseVerdictLabel(review.verdict)} (${review.score}/100).`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "AI exercise review failed.");
+    } finally {
+      setExerciseReviewBusy("");
+    }
+  }
+
   function recordCourseEvidence(course: GeneratedCourse) {
     const progress = courseProgress(course);
     const completedLessons = course.modules.flatMap((module) => module.lessons.map((lesson) => ({ module, lesson })))
@@ -1407,6 +1582,7 @@ export function App() {
               depth={courseDepth}
               courseBusy={courseBusy}
               lessonBusy={lessonBusy}
+              exerciseReviewBusy={exerciseReviewBusy}
               onTopicChange={setCourseTopic}
               onLevelChange={setCourseLevel}
               onDepthChange={setCourseDepth}
@@ -1414,6 +1590,8 @@ export function App() {
               onSelectCourse={selectCourse}
               onOpenLesson={openCourseLesson}
               onToggleComplete={toggleLessonComplete}
+              onSaveExerciseSubmission={saveLessonExerciseSubmission}
+              onReviewExerciseSubmission={reviewLessonExerciseSubmission}
               onBackToLibrary={() => setCourseState((current) => ({ ...current, activeCourseId: "", activeLessonId: "" }))}
             />
           ) : (
@@ -1471,7 +1649,7 @@ export function App() {
             <span>{questGame.xp} XP</span>
           </div>
           <div className="rail-status">
-            <span>{busy || questBusy || skillAnalysisBusy || courseBusy || lessonBusy || aiBusyJob ? <Loader2 size={16} className="spin" /> : <BadgeCheck size={16} />}</span>
+            <span>{busy || questBusy || skillAnalysisBusy || courseBusy || lessonBusy || exerciseReviewBusy || aiBusyJob ? <Loader2 size={16} className="spin" /> : <BadgeCheck size={16} />}</span>
             <p>{status}</p>
           </div>
         </aside>
@@ -1882,6 +2060,7 @@ function CoursesPage(props: {
   depth: CourseDepth;
   courseBusy: boolean;
   lessonBusy: string;
+  exerciseReviewBusy: string;
   onTopicChange: (value: string) => void;
   onLevelChange: (value: CourseLevel) => void;
   onDepthChange: (value: CourseDepth) => void;
@@ -1889,6 +2068,8 @@ function CoursesPage(props: {
   onSelectCourse: (courseId: string) => void;
   onOpenLesson: (courseId: string, lessonId: string) => void;
   onToggleComplete: (courseId: string, lessonId: string) => void;
+  onSaveExerciseSubmission: (courseId: string, lessonId: string, text: string, imageFile?: File | null) => Promise<void>;
+  onReviewExerciseSubmission: (courseId: string, lessonId: string) => Promise<void>;
   onBackToLibrary: () => void;
 }) {
   const {
@@ -1900,6 +2081,7 @@ function CoursesPage(props: {
     depth,
     courseBusy,
     lessonBusy,
+    exerciseReviewBusy,
     onTopicChange,
     onLevelChange,
     onDepthChange,
@@ -1907,8 +2089,18 @@ function CoursesPage(props: {
     onSelectCourse,
     onOpenLesson,
     onToggleComplete,
+    onSaveExerciseSubmission,
+    onReviewExerciseSubmission,
     onBackToLibrary,
   } = props;
+  const [exerciseAnswer, setExerciseAnswer] = useState("");
+  const [exerciseImageFile, setExerciseImageFile] = useState<File | null>(null);
+  const [exerciseSaving, setExerciseSaving] = useState(false);
+
+  useEffect(() => {
+    setExerciseAnswer(activeLesson?.exerciseSubmission?.text ?? "");
+    setExerciseImageFile(null);
+  }, [activeLesson?.id, activeLesson?.exerciseSubmission?.text]);
 
   if (!activeCourse) {
     return (
@@ -2147,6 +2339,89 @@ function CoursesPage(props: {
                   <aside className="lesson-exercise">
                     <span><Target size={19} />Practical exercise</span>
                     <p>{lessonDisplayText(activeLesson.content.exercise)}</p>
+                    <form
+                      className="exercise-submission"
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+                        if (!activeCourse || !activeLesson) return;
+                        setExerciseSaving(true);
+                        try {
+                          await onSaveExerciseSubmission(activeCourse.id, activeLesson.id, exerciseAnswer, exerciseImageFile);
+                          setExerciseImageFile(null);
+                        } finally {
+                          setExerciseSaving(false);
+                        }
+                      }}
+                    >
+                      <label>
+                        Type your answer
+                        <textarea
+                          value={exerciseAnswer}
+                          onChange={(event) => setExerciseAnswer(event.target.value)}
+                          rows={5}
+                          placeholder="Explain your solution, paste commands, write reflections, or summarize what your picture shows."
+                        />
+                      </label>
+                      <div className="exercise-proof-row">
+                        <label className="exercise-image-picker">
+                          <Camera size={17} />
+                          <span>{exerciseImageFile ? exerciseImageFile.name : activeLesson.exerciseSubmission?.image ? "Replace picture" : "Add picture proof"}</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={(event) => setExerciseImageFile(event.target.files?.[0] ?? null)}
+                          />
+                        </label>
+                        <button
+                          type="submit"
+                          disabled={exerciseSaving || (!exerciseAnswer.trim() && !exerciseImageFile && !activeLesson.exerciseSubmission?.image)}
+                        >
+                          {exerciseSaving ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+                          Save answer
+                        </button>
+                        <button
+                          type="button"
+                          className="exercise-review-button"
+                          disabled={exerciseReviewBusy === activeLesson.id || !activeLesson.exerciseSubmission}
+                          onClick={() => onReviewExerciseSubmission(activeCourse.id, activeLesson.id)}
+                        >
+                          {exerciseReviewBusy === activeLesson.id ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
+                          Check with AI
+                        </button>
+                      </div>
+                      {(activeLesson.exerciseSubmission || exerciseImageFile) && (
+                        <div className="exercise-submission-preview">
+                          {activeLesson.exerciseSubmission?.submittedAt && (
+                            <small>Saved {formatApplicationDate(activeLesson.exerciseSubmission.submittedAt)}</small>
+                          )}
+                          {activeLesson.exerciseSubmission?.text && <p>{activeLesson.exerciseSubmission.text}</p>}
+                          {activeLesson.exerciseSubmission?.image && (
+                            <img src={activeLesson.exerciseSubmission.image.dataUrl} alt={`Saved exercise answer for ${activeLesson.title}`} />
+                          )}
+                          {exerciseImageFile && <em>New picture selected: {exerciseImageFile.name}</em>}
+                        </div>
+                      )}
+                      {activeLesson.exerciseSubmission?.review && (
+                        <div className={`exercise-review ${exerciseVerdictClass(activeLesson.exerciseSubmission.review.verdict)}`}>
+                          <div>
+                            <span>{exerciseVerdictLabel(activeLesson.exerciseSubmission.review.verdict)}</span>
+                            <strong>{activeLesson.exerciseSubmission.review.score}/100</strong>
+                          </div>
+                          <p>{activeLesson.exerciseSubmission.review.feedback}</p>
+                          {!!activeLesson.exerciseSubmission.review.strengths.length && (
+                            <ul>
+                              {activeLesson.exerciseSubmission.review.strengths.map((item) => <li key={item}><Check size={14} />{item}</li>)}
+                            </ul>
+                          )}
+                          {!!activeLesson.exerciseSubmission.review.improvements.length && (
+                            <ol>
+                              {activeLesson.exerciseSubmission.review.improvements.map((item) => <li key={item}>{item}</li>)}
+                            </ol>
+                          )}
+                          <small>Reviewed {formatApplicationDate(activeLesson.exerciseSubmission.review.reviewedAt)}</small>
+                        </div>
+                      )}
+                    </form>
                   </aside>
                   {!!activeLesson.content.knowledgeCheck?.length && (
                     <section className="lesson-knowledge-check">
@@ -2995,6 +3270,37 @@ function parseCourseLesson(content: string, sources: ResearchSource[], video?: C
     sources,
     researchedAt: new Date().toISOString(),
   };
+}
+
+function parseExerciseReview(content: string): CourseExerciseReview {
+  const parsed = parseStructuredJson(content);
+  const verdict = parsed.verdict === "correct" || parsed.verdict === "partly_correct" || parsed.verdict === "needs_revision"
+    ? parsed.verdict
+    : "needs_revision";
+  return {
+    verdict,
+    score: Math.max(0, Math.min(100, Math.round(Number(parsed.score ?? 0)))),
+    feedback: cleanText(parsed.feedback, 900) || "AI could not provide detailed feedback for this answer.",
+    strengths: Array.isArray(parsed.strengths)
+      ? parsed.strengths.map((item: unknown) => cleanText(item, 180)).filter(Boolean).slice(0, 5)
+      : [],
+    improvements: Array.isArray(parsed.improvements)
+      ? parsed.improvements.map((item: unknown) => cleanText(item, 220)).filter(Boolean).slice(0, 5)
+      : [],
+    reviewedAt: new Date().toISOString(),
+  };
+}
+
+function exerciseVerdictLabel(verdict: CourseExerciseReview["verdict"]) {
+  if (verdict === "correct") return "Correct";
+  if (verdict === "partly_correct") return "Partly correct";
+  return "Needs revision";
+}
+
+function exerciseVerdictClass(verdict: CourseExerciseReview["verdict"]) {
+  if (verdict === "correct") return "is-correct";
+  if (verdict === "partly_correct") return "is-partial";
+  return "needs-revision";
 }
 
 function courseLessonCount(course: GeneratedCourse) {

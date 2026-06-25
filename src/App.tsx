@@ -176,6 +176,13 @@ type ResearchSource = {
   url: string;
 };
 
+type CourseVideo = {
+  id: string;
+  title: string;
+  url: string;
+  authorName?: string;
+};
+
 type CourseLessonContent = {
   introduction: string;
   sections: Array<{
@@ -190,6 +197,7 @@ type CourseLessonContent = {
     answer: string;
   }>;
   keyTakeaways: string[];
+  video?: CourseVideo;
   sources: ResearchSource[];
   researchedAt: string;
 };
@@ -1049,7 +1057,9 @@ export function App() {
           ].join("\n"),
         },
       ], courseLessonResponseFormat, { maxOutputTokens: 8000 });
-      const lessonContent = parseCourseLesson(lessonDraft, research.sources);
+      setStatus(`Finding a relevant YouTube video for ${lesson.title}...`);
+      const video = await findCourseVideo(course, module, lesson);
+      const lessonContent = parseCourseLesson(lessonDraft, research.sources, video);
       setCourseState((current) => ({
         ...current,
         courses: current.courses.map((item) => item.id === courseId ? {
@@ -2097,6 +2107,24 @@ function CoursesPage(props: {
                     <span>Web researched</span>
                     <strong>{activeLesson.content.sources?.length ?? 0} sources</strong>
                   </div>
+                  {activeLesson.content.video && (
+                    <aside className="lesson-video">
+                      <div>
+                        <p className="eyebrow">Watch this</p>
+                        <h3>{activeLesson.content.video.title}</h3>
+                        {activeLesson.content.video.authorName && <span>{activeLesson.content.video.authorName}</span>}
+                      </div>
+                      <iframe
+                        title={activeLesson.content.video.title}
+                        src={youtubeEmbedUrl(activeLesson.content.video)}
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowFullScreen
+                      />
+                      <a href={activeLesson.content.video.url} target="_blank" rel="noreferrer">
+                        Open on YouTube <ExternalLink size={14} />
+                      </a>
+                    </aside>
+                  )}
                   <p className="lesson-introduction">{lessonDisplayText(activeLesson.content.introduction)}</p>
                   {activeLesson.content.sections.map((section) => (
                     <section key={section.heading}>
@@ -2386,6 +2414,31 @@ async function askResearchedAi(messages: AiMessage[], responseFormat?: AiRespons
   };
 }
 
+async function findCourseVideo(course: GeneratedCourse, module: CourseModule | undefined, lesson: CourseLesson): Promise<CourseVideo | undefined> {
+  const query = [
+    course.topic,
+    lesson.title,
+    module?.skills.slice(0, 2).join(" "),
+    course.level,
+    "tutorial lesson explained",
+  ].filter(Boolean).join(" ");
+  try {
+    const response = await fetch(`/api/youtube?q=${encodeURIComponent(query)}`);
+    const data = await response.json();
+    if (!response.ok || !data.video?.url || !data.video?.id) return undefined;
+    const url = cleanUrl(data.video.url);
+    if (!url) return undefined;
+    return {
+      id: cleanText(data.video.id, 16),
+      title: cleanText(data.video.title, 140) || lesson.title,
+      url,
+      authorName: cleanText(data.video.authorName, 90) || undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizeResearchSources(value: unknown): ResearchSource[] {
   if (!Array.isArray(value)) return [];
   return uniqueBy(
@@ -2395,6 +2448,10 @@ function normalizeResearchSources(value: unknown): ResearchSource[] {
     })).filter((source: ResearchSource) => source.title && source.url),
     (source) => source.url,
   ).slice(0, 16);
+}
+
+function youtubeEmbedUrl(video: CourseVideo) {
+  return `https://www.youtube.com/embed/${encodeURIComponent(video.id)}`;
 }
 
 function sourceDomain(url: string) {
@@ -2898,7 +2955,7 @@ function parseGeneratedCourse(content: string, topic: string, level: CourseLevel
   };
 }
 
-function parseCourseLesson(content: string, sources: ResearchSource[]): CourseLessonContent {
+function parseCourseLesson(content: string, sources: ResearchSource[], video?: CourseVideo): CourseLessonContent {
   const parsed = parseStructuredJson(content);
   const introduction = String(parsed.introduction ?? "").trim().slice(0, 1800);
   const sections = (Array.isArray(parsed.sections) ? parsed.sections : [])
@@ -2934,6 +2991,7 @@ function parseCourseLesson(content: string, sources: ResearchSource[]): CourseLe
     exercise,
     knowledgeCheck,
     keyTakeaways,
+    video,
     sources,
     researchedAt: new Date().toISOString(),
   };

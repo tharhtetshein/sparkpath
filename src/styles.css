@@ -1952,6 +1952,51 @@ pre {
   line-height: 1.75;
 }
 
+.lesson-video {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.42fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-bottom: 28px;
+  padding: 20px;
+  border: 1px solid var(--ink);
+  background:
+    linear-gradient(135deg, rgba(199, 85, 61, 0.14), transparent 44%),
+    #fff4df;
+  box-shadow: 7px 7px 0 var(--course-coral);
+}
+
+.lesson-video h3 {
+  margin: 6px 0 8px;
+  font-family: "Fraunces", serif;
+  font-size: clamp(1.35rem, 2vw, 2rem);
+  line-height: 1.08;
+}
+
+.lesson-video span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.lesson-video iframe {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+}
+
+.lesson-video a {
+  grid-column: 2;
+  width: fit-content;
+  color: var(--red);
+  font-size: 0.78rem;
+  font-weight: 850;
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 .lesson-content > section {
   margin-top: 38px;
 }
@@ -2299,6 +2344,14 @@ pre {
   .lesson-sources {
     grid-template-columns: 1fr;
     padding: 20px;
+  }
+
+  .lesson-video {
+    grid-template-columns: 1fr;
+  }
+
+  .lesson-video a {
+    grid-column: auto;
   }
 
   .lesson-sources a {

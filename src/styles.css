@@ -1870,7 +1870,6 @@ pre {
 }
 
 .lesson-done {
-  flex: 0 0 auto;
   background: transparent;
   color: var(--ink);
 }
@@ -2371,9 +2370,10 @@ pre {
 }
 
 .lesson-navigation {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(180px, 1fr) minmax(130px, 0.8fr);
   gap: 14px;
+  align-items: center;
   margin-top: 52px;
   padding-top: 24px;
   border-top: 1px solid var(--line);
@@ -2382,6 +2382,14 @@ pre {
 .lesson-navigation button:first-child {
   background: transparent;
   color: var(--ink);
+}
+
+.lesson-navigation .lesson-done {
+  justify-self: center;
+}
+
+.lesson-navigation button:last-child {
+  justify-self: end;
 }
 
 .spin {
@@ -2512,12 +2520,14 @@ pre {
     flex-direction: column;
   }
 
-  .lesson-done {
-    width: 100%;
+  .lesson-navigation {
+    grid-template-columns: 1fr;
   }
 
-  .lesson-navigation button {
-    flex: 1;
+  .lesson-navigation button,
+  .lesson-navigation .lesson-done {
+    width: 100%;
+    justify-self: stretch;
     padding-inline: 8px;
   }
 

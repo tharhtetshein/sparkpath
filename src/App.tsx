@@ -2274,14 +2274,6 @@ function CoursesPage(props: {
                   <p className="eyebrow">{activeModule?.title}</p>
                   <span>Lesson {activeIndex + 1} of {allLessons.length} · {activeLesson.estimatedMinutes} min</span>
                 </div>
-                <button
-                  type="button"
-                  className={activeLesson.completedAt ? "lesson-done completed" : "lesson-done"}
-                  onClick={() => onToggleComplete(activeCourse.id, activeLesson.id)}
-                >
-                  {activeLesson.completedAt ? <Check size={18} /> : <Circle size={18} />}
-                  {activeLesson.completedAt ? "Completed" : "Mark complete"}
-                </button>
               </div>
               <h2>{activeLesson.title}</h2>
               <p className="lesson-summary">{activeLesson.summary}</p>
@@ -2477,6 +2469,14 @@ function CoursesPage(props: {
               <footer className="lesson-navigation">
                 <button type="button" disabled={!previousLesson} onClick={() => previousLesson && onOpenLesson(activeCourse.id, previousLesson.id)}>
                   <ChevronLeft size={17} />Previous
+                </button>
+                <button
+                  type="button"
+                  className={activeLesson.completedAt ? "lesson-done completed" : "lesson-done"}
+                  onClick={() => onToggleComplete(activeCourse.id, activeLesson.id)}
+                >
+                  {activeLesson.completedAt ? <Check size={18} /> : <Circle size={18} />}
+                  {activeLesson.completedAt ? "Completed" : "Mark complete"}
                 </button>
                 <button type="button" disabled={!nextLesson} onClick={() => nextLesson && onOpenLesson(activeCourse.id, nextLesson.id)}>
                   Next lesson<ChevronRight size={17} />

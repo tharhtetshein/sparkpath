@@ -947,7 +947,7 @@ export function App() {
             `Research brief:\n${research.content.slice(0, 10000)}`,
           ].join("\n"),
         },
-      ], courseOutlineResponseFormat);
+      ], courseOutlineResponseFormat, { maxOutputTokens: 3600 });
       const generated = parseGeneratedCourse(outline, topic, courseLevel, courseDepth, research.sources);
       const firstLessonId = generated.modules[0]?.lessons[0]?.id ?? "";
       setCourseState((current) => ({
@@ -1024,8 +1024,10 @@ export function App() {
             "Use only the research brief, course context, and source list. Do not add unsupported claims.",
             "Write a substantial self-contained lesson, not a short summary.",
             "Define terminology, explain why concepts work, connect ideas, show concrete examples, discuss tradeoffs, and include a worked example.",
-            "Return four to six sections. Each section should contain meaningful teaching detail, not bullet-point fragments.",
-            "Add common misconceptions, a practical exercise, and three knowledge-check questions with answers.",
+            "Return exactly four sections. Each section should be 140 to 220 words, with meaningful teaching detail, not bullet-point fragments.",
+            "Keep the introduction under 140 words and the worked example under 260 words.",
+            "Add exactly four common misconceptions, one practical exercise under 180 words, and exactly three knowledge-check questions with answers.",
+            "Keep each key takeaway under 28 words.",
             "Do not include markdown links in fields. The UI displays source links separately.",
             "Return only the structured JSON object.",
           ].join(" "),
@@ -1046,7 +1048,7 @@ export function App() {
             `Research brief:\n${research.content.slice(0, 14000)}`,
           ].join("\n"),
         },
-      ], courseLessonResponseFormat);
+      ], courseLessonResponseFormat, { maxOutputTokens: 8000 });
       const lessonContent = parseCourseLesson(lessonDraft, research.sources);
       setCourseState((current) => ({
         ...current,
@@ -2353,11 +2355,11 @@ function JobsPage(props: {
   );
 }
 
-async function askAi(messages: AiMessage[], responseFormat?: AiResponseFormat) {
+async function askAi(messages: AiMessage[], responseFormat?: AiResponseFormat, options?: { maxOutputTokens?: number }) {
   const response = await fetch("/api/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, responseFormat }),
+    body: JSON.stringify({ messages, responseFormat, maxOutputTokens: options?.maxOutputTokens }),
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "AI request failed.");

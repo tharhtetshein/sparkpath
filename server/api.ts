@@ -249,11 +249,13 @@ export function aiApi(env: Record<string, string>) {
 
       const responseFormat = normalizeResponseFormat(body.responseFormat);
       const webSearch = body.webSearch === true;
+      const requestedMaxOutputTokens = boundedPositiveInteger(body.maxOutputTokens, 12000);
+      const outputTokenBudget = requestedMaxOutputTokens ?? (webSearch ? researchMaxOutputTokens : maxOutputTokens);
       const upstream = await callOpenAiProvider(apiUrl, apiKey, {
         model: webSearch ? researchModel : model,
         instructions: messagesToOpenAiInstructions(messages),
         input: messagesToOpenAiInput(messages),
-        max_output_tokens: webSearch ? researchMaxOutputTokens : maxOutputTokens,
+        max_output_tokens: outputTokenBudget,
         reasoning: { effort: webSearch ? researchReasoningEffort : reasoningEffort },
         ...(webSearch ? {
           tools: [{
@@ -1331,6 +1333,9 @@ function normalizeResponseFormat(value: unknown): OpenAiTextFormat | undefined {
 
 function parseOpenAiResponseContent(raw: string) {
   const data = JSON.parse(raw);
+  if (data?.status === "incomplete") {
+    throw new Error(openAiEmptyContentMessage(data));
+  }
   if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text;
   if (Array.isArray(data.output)) {
     const text = collectOutputText(data.output).join("\n").trim();
@@ -1392,6 +1397,12 @@ function openAiErrorMessage(raw: string, status: number) {
 function positiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function boundedPositiveInteger(value: unknown, max: number) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
+  return Math.min(parsed, max);
 }
 
 function normalizeReasoningEffort(value: string | undefined): "minimal" | "low" | "medium" | "high" {

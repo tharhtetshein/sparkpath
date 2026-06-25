@@ -1611,6 +1611,22 @@ pre {
   color: var(--course-cream);
 }
 
+.adaptive-course-note {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 9px;
+  align-items: start;
+  padding: 14px 16px;
+  border: 1px dashed var(--line);
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.adaptive-course-note svg {
+  color: var(--green);
+}
+
 .generate-course-button {
   min-height: 62px;
   background: var(--course-navy);
@@ -2390,6 +2406,33 @@ pre {
 
 .lesson-navigation button:last-child {
   justify-self: end;
+}
+
+.lesson-mastery-gate {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 12px;
+  align-items: start;
+  margin-top: 48px;
+  padding: 18px 20px;
+  border: 1px solid var(--yellow);
+  background: #f6ecd2;
+}
+
+.lesson-mastery-gate > svg {
+  color: var(--green);
+}
+
+.lesson-mastery-gate strong {
+  display: block;
+  color: var(--ink);
+}
+
+.lesson-mastery-gate p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
 }
 
 .spin {

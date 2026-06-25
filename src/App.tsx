@@ -56,6 +56,7 @@ const QUEST_KEY = "sparkpath-ai-quest-board-v1";
 const APPLICATIONS_KEY = "sparkpath-job-applications-v1";
 const SKILL_ANALYSIS_KEY = "sparkpath-ai-skill-analysis-v1";
 const COURSES_KEY = "sparkpath-ai-courses-v1";
+const COURSE_MASTERY_SCORE = 75;
 
 type View = "home" | "courses" | "jobs";
 
@@ -944,7 +945,11 @@ export function App() {
       return;
     }
 
-    const lessonCount = courseDepth === "Quick start" ? "3 modules with 2 lessons each" : courseDepth === "Deep dive" ? "5 modules with 3 lessons each" : "4 modules with 3 lessons each";
+    const scopeGuidance = courseDepth === "Quick start"
+      ? "Create a focused foundation, usually 3 to 5 modules with 2 to 4 lessons per module."
+      : courseDepth === "Deep dive"
+        ? "Create a comprehensive curriculum, usually 8 to 12 modules with 3 to 6 lessons per module."
+        : "Create a thorough practical curriculum, usually 5 to 9 modules with 3 to 5 lessons per module.";
     setCourseBusy(true);
     setStatus(`Designing a ${courseLevel.toLowerCase()} course for ${topic}...`);
     try {
@@ -957,8 +962,10 @@ export function App() {
             "Ground the curriculum in authoritative current sources such as official documentation, university materials, standards bodies, peer-reviewed publications, reputable textbooks, or recognized professional organizations.",
             "Avoid building the curriculum from generic blog summaries when primary or authoritative sources exist.",
             "Do not return JSON. Return a compact research brief in plain markdown.",
-            "Include: recommended learning sequence, core subtopics, prerequisites, common learner mistakes, practical exercises, and source notes.",
-            "Keep the brief under 1,200 words.",
+            "Determine the curriculum size from the real breadth and difficulty of the topic. Do not force a fixed module count.",
+            "Include: recommended learning sequence, core subtopics, prerequisites, advanced extensions, common learner mistakes, practical exercises, mastery checks, and source notes.",
+            "Identify enough material for the learner to progress from their selected starting level to confident independent application.",
+            "Keep the brief under 1,600 words.",
           ].join(" "),
         },
         {
@@ -966,7 +973,7 @@ export function App() {
           content: [
             `Topic: ${topic}`,
             `Learner level: ${courseLevel}`,
-            `Course depth: ${courseDepth}; create ${lessonCount}.`,
+            `Course depth: ${courseDepth}. ${scopeGuidance}`,
             `Student target role: ${input.targetRole || "Not specified"}`,
             `Existing evidence-derived skills: ${result.skills.slice(0, 8).map((skill) => skill.name).join(", ") || "None yet"}`,
             "Research what a strong course should cover for this topic and learner level.",
@@ -982,9 +989,12 @@ export function App() {
             "Convert the supplied research brief into a coherent practical course outline.",
             "Use only the research brief, source list, and learner context. Do not invent unsupported claims.",
             "The course must progress logically, include applied exercises, and name concrete skills practiced in each module.",
+            "Choose the number of modules and lessons from the researched topic scope. Do not use a fixed template or stop at four modules.",
+            "Cover foundations, application, mistakes, integration, and advanced or real-world use where relevant.",
+            "Every module must materially advance understanding; do not add filler merely to increase course length.",
             "Do not write full lesson content yet. Create a strong course outline that can be expanded lesson by lesson.",
             "Avoid vague module names. Every lesson must have measurable learning objectives.",
-            "Keep the outline compact enough for a 1,800-token response: module descriptions and lesson summaries must each be one short sentence.",
+            "Keep module descriptions and lesson summaries concise so the complete adaptive curriculum fits in one structured response.",
             "Give every lesson exactly two objectives, each under eight words. Give every module no more than four skill names.",
             "Return only the structured JSON object.",
           ].join(" "),
@@ -994,7 +1004,7 @@ export function App() {
           content: [
             `Topic: ${topic}`,
             `Learner level: ${courseLevel}`,
-            `Course depth: ${courseDepth}; create ${lessonCount}.`,
+            `Course depth: ${courseDepth}. ${scopeGuidance}`,
             `Student target role: ${input.targetRole || "Not specified"}`,
             `Existing evidence-derived skills: ${result.skills.slice(0, 8).map((skill) => skill.name).join(", ") || "None yet"}`,
             "",
@@ -1003,7 +1013,7 @@ export function App() {
             `Research brief:\n${research.content.slice(0, 10000)}`,
           ].join("\n"),
         },
-      ], courseOutlineResponseFormat, { maxOutputTokens: 3600 });
+      ], courseOutlineResponseFormat, { maxOutputTokens: 10000 });
       const generated = parseGeneratedCourse(outline, topic, courseLevel, courseDepth, research.sources);
       const firstLessonId = generated.modules[0]?.lessons[0]?.id ?? "";
       setCourseState((current) => ({
@@ -1131,6 +1141,14 @@ export function App() {
     if (!course) return;
     const lesson = course.modules.flatMap((module) => module.lessons).find((item) => item.id === lessonId);
     if (!lesson) return;
+
+    if (!lesson.completedAt) {
+      const mastery = lessonMasteryStatus(lesson);
+      if (!mastery.canComplete) {
+        setStatus(mastery.message);
+        return;
+      }
+    }
 
     const completedAt = lesson.completedAt ? undefined : new Date().toISOString();
     const updatedCourse: GeneratedCourse = {
@@ -2163,6 +2181,10 @@ function CoursesPage(props: {
               </div>
             </fieldset>
           </div>
+          <p className="adaptive-course-note">
+            <Network size={17} />
+            SparkPath researches the topic and chooses the modules and lessons needed for complete coverage. Depth controls scope, not a fixed template.
+          </p>
           <button className="generate-course-button" type="button" onClick={onGenerate} disabled={courseBusy || !topic.trim()}>
             {courseBusy ? <Loader2 size={20} className="spin" /> : <Sparkles size={20} />}
             {courseBusy ? "Designing your course..." : "Generate course"}
@@ -2215,6 +2237,7 @@ function CoursesPage(props: {
   const previousLesson = activeIndex > 0 ? allLessons[activeIndex - 1] : undefined;
   const nextLesson = activeIndex < allLessons.length - 1 ? allLessons[activeIndex + 1] : undefined;
   const activeModule = activeCourse.modules.find((module) => module.lessons.some((lesson) => lesson.id === activeLesson?.id));
+  const activeMastery = activeLesson ? lessonMasteryStatus(activeLesson) : undefined;
 
   return (
     <div className="course-reader">
@@ -2468,6 +2491,15 @@ function CoursesPage(props: {
                 </div>
               )}
 
+              {activeLesson && !activeLesson.completedAt && activeMastery && !activeMastery.canComplete && (
+                <div className="lesson-mastery-gate">
+                  <BadgeCheck size={19} />
+                  <div>
+                    <strong>Demonstrate mastery to complete this lesson</strong>
+                    <p>{activeMastery.message}</p>
+                  </div>
+                </div>
+              )}
               <footer className="lesson-navigation">
                 <button type="button" disabled={!previousLesson} onClick={() => previousLesson && onOpenLesson(activeCourse.id, previousLesson.id)}>
                   <ChevronLeft size={17} />Previous
@@ -2475,10 +2507,11 @@ function CoursesPage(props: {
                 <button
                   type="button"
                   className={activeLesson.completedAt ? "lesson-done completed" : "lesson-done"}
+                  disabled={!activeLesson.completedAt && !activeMastery?.canComplete}
                   onClick={() => onToggleComplete(activeCourse.id, activeLesson.id)}
                 >
                   {activeLesson.completedAt ? <Check size={18} /> : <Circle size={18} />}
-                  {activeLesson.completedAt ? "Completed" : "Mark complete"}
+                  {activeLesson.completedAt ? "Completed" : activeMastery?.canComplete ? "Mark complete" : "Mastery required"}
                 </button>
                 <button type="button" disabled={!nextLesson} onClick={() => nextLesson && onOpenLesson(activeCourse.id, nextLesson.id)}>
                   Next lesson<ChevronRight size={17} />
@@ -3320,6 +3353,37 @@ function exerciseVerdictClass(verdict: CourseExerciseReview["verdict"]) {
   if (verdict === "correct") return "is-correct";
   if (verdict === "partly_correct") return "is-partial";
   return "needs-revision";
+}
+
+function lessonMasteryStatus(lesson: CourseLesson) {
+  if (!lesson.content?.researchedAt) {
+    return {
+      canComplete: false,
+      message: "Research and study the lesson before completing it.",
+    };
+  }
+  if (!lesson.exerciseSubmission) {
+    return {
+      canComplete: false,
+      message: "Complete and save the practical exercise, then ask AI to check your answer.",
+    };
+  }
+  if (!lesson.exerciseSubmission.review) {
+    return {
+      canComplete: false,
+      message: "Use “Check with AI” on your saved exercise answer.",
+    };
+  }
+  if (lesson.exerciseSubmission.review.score < COURSE_MASTERY_SCORE || lesson.exerciseSubmission.review.verdict === "needs_revision") {
+    return {
+      canComplete: false,
+      message: `Improve your exercise answer and reach at least ${COURSE_MASTERY_SCORE}/100. Current score: ${lesson.exerciseSubmission.review.score}/100.`,
+    };
+  }
+  return {
+    canComplete: true,
+    message: `Mastery verified at ${lesson.exerciseSubmission.review.score}/100.`,
+  };
 }
 
 function courseLessonCount(course: GeneratedCourse) {

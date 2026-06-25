@@ -39,6 +39,7 @@ import {
 import {
   analyzeStudent,
   EvidenceSource,
+  EvidenceTrustLevel,
   inferJobTargets,
   JobListing,
   JobSearchTarget,
@@ -156,6 +157,35 @@ type SkillAnalysisState = {
   signature: string;
   analyzedAt: string;
 };
+
+type TrustMetadata = {
+  level: EvidenceTrustLevel;
+  label: string;
+  description: string;
+};
+
+const trustTaxonomy: TrustMetadata[] = [
+  {
+    level: "self_reported",
+    label: "Self-reported",
+    description: "Stated or uploaded by the student; SparkPath has not independently confirmed the origin.",
+  },
+  {
+    level: "linked",
+    label: "Linked",
+    description: "A live URL was supplied so a viewer can inspect the work directly.",
+  },
+  {
+    level: "platform_verified",
+    label: "Platform-verified",
+    description: "SparkPath connected to the source platform or recorded verified activity directly.",
+  },
+  {
+    level: "institutionally_confirmed",
+    label: "Institutionally confirmed",
+    description: "The issuing school, employer, or certification body confirmed the evidence independently.",
+  },
+];
 
 type ParsedSkillAnalysis = Pick<SkillAnalysisState, "skills" | "summary" | "confidenceNotes">;
 
@@ -707,6 +737,8 @@ export function App() {
       type: "manual",
       title: `Manual evidence ${input.sources.filter((source) => source.type === "manual").length + 1}`,
       content: manualNote.trim(),
+      trustLevel: "self_reported",
+      trustReason: "Entered directly by the student and not independently checked.",
       createdAt: new Date().toISOString(),
     });
     setManualNote("");
@@ -1313,6 +1345,8 @@ export function App() {
         `Practiced skills: ${practicedSkills.join(", ")}.`,
         ...completedLessons.slice(-6).map(({ lesson }) => `Lesson objective demonstrated: ${lesson.objectives.join("; ")}.`),
       ].join("\n"),
+      trustLevel: "platform_verified",
+      trustReason: "SparkPath recorded completed lessons and AI-reviewed mastery exercises on the platform.",
       createdAt: new Date().toISOString(),
     });
   }
@@ -1330,6 +1364,10 @@ export function App() {
         `Verification: ${detail}`,
         `Verified at: ${verifiedAt}.`,
       ].join("\n"),
+      trustLevel: project.proofMode === "github" ? "platform_verified" : "self_reported",
+      trustReason: project.proofMode === "github"
+        ? "SparkPath checked repository activity directly through GitHub."
+        : "The student uploaded picture proof; AI reviewed visible content but did not confirm its issuer or origin.",
       createdAt: verifiedAt,
     });
   }
@@ -1676,6 +1714,61 @@ export function App() {
   );
 }
 
+function TrustBadge({ metadata, compact = false }: { metadata: TrustMetadata; compact?: boolean }) {
+  return (
+    <span
+      className={`trust-badge trust-${metadata.level}${compact ? " compact" : ""}`}
+      title={metadata.description}
+    >
+      {metadata.label}
+    </span>
+  );
+}
+
+function trustMetadata(level: EvidenceTrustLevel, reason?: string): TrustMetadata {
+  const base = trustTaxonomy.find((tier) => tier.level === level) ?? trustTaxonomy[0];
+  return reason ? { ...base, description: reason } : base;
+}
+
+function trustForSource(source: EvidenceSource): TrustMetadata {
+  if (source.trustLevel) return trustMetadata(source.trustLevel, source.trustReason);
+  if (source.type === "github") {
+    return trustMetadata("platform_verified", "SparkPath pulled this evidence directly from GitHub.");
+  }
+  if (source.type === "course") {
+    return trustMetadata("platform_verified", "SparkPath recorded the learner's course progress and mastery activity.");
+  }
+  if (source.type === "quest" && /GitHub repository activity verified/i.test(source.content)) {
+    return trustMetadata("platform_verified", "SparkPath checked the quest's repository activity directly through GitHub.");
+  }
+  if (source.url) {
+    return trustMetadata("linked", "A live URL was supplied so viewers can inspect the evidence.");
+  }
+  return trustMetadata("self_reported", "This evidence was entered or uploaded by the student and has not been independently confirmed.");
+}
+
+function trustForSkillSignal(input: StudentInput, sourceTitle: string): TrustMetadata {
+  const source = input.sources.find((item) => item.title.toLowerCase() === sourceTitle.toLowerCase());
+  if (source) return trustForSource(source);
+  if (sourceTitle === "Profile statement and links" && input.links.trim()) {
+    return trustMetadata("linked", "This signal comes from a live portfolio or profile URL supplied by the student.");
+  }
+  return trustMetadata("self_reported", "SparkPath could not match this signal to an independently connected evidence source.");
+}
+
+function strongestSkillTrust(input: StudentInput, skill: Skill): TrustMetadata {
+  const order: Record<EvidenceTrustLevel, number> = {
+    self_reported: 0,
+    linked: 1,
+    platform_verified: 2,
+    institutionally_confirmed: 3,
+  };
+  return skill.evidence
+    .map((signal) => trustForSkillSignal(input, signal.sourceTitle))
+    .sort((left, right) => order[right.level] - order[left.level])[0]
+    ?? trustMetadata("self_reported");
+}
+
 function DashboardPage(props: {
   input: StudentInput;
   result: ReturnType<typeof analyzeStudent>;
@@ -1847,17 +1940,46 @@ function DashboardPage(props: {
           {skillAnalysisStale && (
             <p className="skill-analysis-notice">The evidence or profile changed. Refresh the AI analysis before relying on these matches.</p>
           )}
+          <div className="trust-taxonomy" aria-label="Evidence trust levels">
+            <div>
+              <strong>Trust labels</strong>
+              <p>Trust describes how evidence was obtained, not how impressive the skill is.</p>
+            </div>
+            <div className="trust-taxonomy-grid">
+              {trustTaxonomy.map((tier) => (
+                <article key={tier.level}>
+                  <TrustBadge metadata={tier} />
+                  <p>{tier.description}</p>
+                </article>
+              ))}
+            </div>
+          </div>
           {result.skills.length ? (
             <div className="skill-list">
               {result.skills.map((skill) => (
                 <article className="skill-row" key={skill.name}>
                   <div>
-                    <span>{skill.category}</span>
+                    <div className="skill-label-row">
+                      <span>{skill.category}</span>
+                      <TrustBadge metadata={strongestSkillTrust(input, skill)} />
+                    </div>
                     <strong>{skill.name}</strong>
-                    <small>
+                    <small className="legacy-skill-signal">
                       {skill.evidence[0]?.quote ?? skill.terms.join(", ")}
                       {skill.evidence[0]?.sourceTitle ? ` — ${skill.evidence[0].sourceTitle}` : ""}
                     </small>
+                    <div className="skill-signals">
+                      {skill.evidence.length ? skill.evidence.map((signal) => {
+                        const trust = trustForSkillSignal(input, signal.sourceTitle);
+                        return (
+                          <div key={`${signal.sourceTitle}-${signal.quote}`}>
+                            <TrustBadge metadata={trust} compact />
+                            <p>{signal.quote}</p>
+                            <small>{signal.sourceTitle}</small>
+                          </div>
+                        );
+                      }) : <p>{skill.terms.join(", ")}</p>}
+                    </div>
                   </div>
                   <div className="skill-meter" aria-label={`${skill.name} strength`}>
                     <i style={{ width: `${skill.score}%` }} />
@@ -1875,9 +1997,13 @@ function DashboardPage(props: {
             {input.sources.map((source) => (
               <article key={source.id}>
                 <div>
-                  <span>{source.type}</span>
+                  <div className="source-label-row">
+                    <span>{source.type}</span>
+                    <TrustBadge metadata={trustForSource(source)} />
+                  </div>
                   <h3>{source.title}</h3>
                   <p>{source.content.slice(0, 180)}{source.content.length > 180 ? "..." : ""}</p>
+                  <small className="source-trust-reason">{trustForSource(source).description}</small>
                 </div>
                 <button type="button" className="icon-button" onClick={() => onRemoveSource(source.id)} aria-label={`Remove ${source.title}`}><Trash2 size={16} /></button>
               </article>

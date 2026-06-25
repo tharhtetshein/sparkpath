@@ -1,4 +1,5 @@
 export type EvidenceSourceType = "manual" | "file" | "github" | "opportunity" | "course" | "quest";
+export type EvidenceTrustLevel = "self_reported" | "linked" | "platform_verified" | "institutionally_confirmed";
 
 export type EvidenceSource = {
   id: string;
@@ -6,6 +7,8 @@ export type EvidenceSource = {
   title: string;
   content: string;
   url?: string;
+  trustLevel?: EvidenceTrustLevel;
+  trustReason?: string;
   createdAt: string;
 };
 

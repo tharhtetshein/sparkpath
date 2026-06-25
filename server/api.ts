@@ -359,6 +359,8 @@ type GithubEvidenceSource = {
   title: string;
   content: string;
   url?: string;
+  trustLevel: "platform_verified";
+  trustReason: string;
   createdAt: string;
 };
 
@@ -434,6 +436,8 @@ async function importGithubRepoEvidence(repo: string, token: string): Promise<Gi
     type: "github",
     title: repoJson.full_name,
     url: repoJson.html_url,
+    trustLevel: "platform_verified",
+    trustReason: "SparkPath pulled repository metadata and content directly from GitHub.",
     createdAt: new Date().toISOString(),
     content: [
       "GitHub evidence digest:",
@@ -474,6 +478,8 @@ async function importGithubProfileEvidence(username: string, token: string): Pro
     type: "github",
     title: `${user.login} GitHub profile`,
     url: user.html_url,
+    trustLevel: "platform_verified",
+    trustReason: "SparkPath pulled the public profile and repository evidence directly from GitHub.",
     createdAt: new Date().toISOString(),
     content: [
       "GitHub profile evidence digest:",

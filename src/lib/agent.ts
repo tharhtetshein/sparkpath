@@ -57,6 +57,7 @@ export type Skill = {
   category: string;
   score: number;
   terms: string[];
+  studentConfirmed?: boolean;
   evidence: Array<{
     sourceTitle: string;
     quote: string;

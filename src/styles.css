@@ -613,10 +613,23 @@ textarea:focus {
   font-size: 0.66rem;
 }
 
+.skill-score {
+  display: grid;
+  gap: 6px;
+  margin-top: 19px;
+}
+
+.skill-score > small {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 850;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
 .skill-meter {
   position: relative;
   height: 22px;
-  margin-top: 26px;
   background: #e9dfcb;
   border: 1px solid var(--line);
 }
@@ -633,6 +646,85 @@ textarea:focus {
   top: 50%;
   transform: translateY(-50%);
   font-size: 0.74rem;
+}
+
+.skill-review-sections {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.skill-review-panel,
+.skill-finding-panel {
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+}
+
+.skill-review-panel > div:first-child p {
+  max-width: 760px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.skill-review-list,
+.skill-finding-panel > div {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.skill-review-list article,
+.skill-finding-panel article {
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.skill-review-list label {
+  margin-bottom: 8px;
+}
+
+.skill-review-list p,
+.skill-finding-panel p {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.skill-review-list small {
+  display: block;
+  margin-top: 7px;
+  color: #52605a;
+  line-height: 1.4;
+}
+
+.skill-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.skill-review-actions .icon-button {
+  margin-left: auto;
+}
+
+.skill-finding-panel article {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) minmax(180px, 0.45fr) minmax(240px, 1fr);
+  gap: 10px 14px;
+  align-items: start;
+}
+
+.skill-finding-panel article > span {
+  color: var(--red);
+  font-size: 0.62rem;
+  font-weight: 850;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
 }
 
 .source-list article {
@@ -2692,6 +2784,14 @@ pre {
 
   .trust-taxonomy-grid {
     grid-template-columns: 1fr;
+  }
+
+  .skill-finding-panel article {
+    grid-template-columns: 1fr;
+  }
+
+  .skill-review-actions .icon-button {
+    margin-left: 0;
   }
 
   .reward-ladder article {

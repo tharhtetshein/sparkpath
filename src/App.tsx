@@ -49,12 +49,13 @@ import {
 } from "./lib/agent";
 import { buildApplicationDocx } from "./lib/applicationDoc";
 import { importGithubRepo, inspectGithubRepoProgress, parseFiles, RepoProgressSnapshot } from "./lib/ingest";
+import { findTaxonomyNode, skillTaxonomyGroups, taxonomyPromptList } from "./lib/skillTaxonomy";
 
 const STORAGE_KEY = "sparkpath-workspace-v1";
 const PROGRESS_KEY = "sparkpath-project-progress-v1";
 const QUEST_KEY = "sparkpath-ai-quest-board-v1";
 const APPLICATIONS_KEY = "sparkpath-job-applications-v1";
-const SKILL_ANALYSIS_KEY = "sparkpath-ai-skill-analysis-v3";
+const SKILL_ANALYSIS_KEY = "sparkpath-ai-skill-analysis-v4";
 const COURSES_KEY = "sparkpath-ai-courses-v1";
 const COURSE_MASTERY_SCORE = 75;
 
@@ -151,7 +152,8 @@ type AiResponseFormat = {
 
 type SkillAnalysisState = {
   skills: Skill[];
-  findings: SkillFinding[];
+  skillEdits: Record<string, string>;
+  hiddenSkillIds: string[];
   summary: string;
   confidenceNotes: string[];
   signature: string;
@@ -196,7 +198,7 @@ const trustTaxonomy: TrustMetadata[] = [
   },
 ];
 
-type ParsedSkillAnalysis = Pick<SkillAnalysisState, "skills" | "findings" | "summary" | "confidenceNotes">;
+type ParsedSkillAnalysis = Pick<SkillAnalysisState, "skills" | "summary" | "confidenceNotes">;
 
 type SkillAnalysisPartition = {
   key: "github" | "resume" | "profile";
@@ -320,15 +322,9 @@ const skillAnalysisResponseFormat: AiResponseFormat = {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["name", "category", "score", "terms", "evidence"],
+          required: ["taxonomyId", "evidence"],
           properties: {
-            name: { type: "string" },
-            category: { type: "string" },
-            score: { type: "integer" },
-            terms: {
-              type: "array",
-              items: { type: "string" },
-            },
+            taxonomyId: { type: "string" },
             evidence: {
               type: "array",
               items: {
@@ -348,35 +344,6 @@ const skillAnalysisResponseFormat: AiResponseFormat = {
       confidenceNotes: {
         type: "array",
         items: { type: "string" },
-      },
-    },
-  },
-};
-
-const skillValidationResponseFormat: AiResponseFormat = {
-  name: "student_skill_validation",
-  schema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["verdicts"],
-    properties: {
-      verdicts: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "decision", "classification", "evidenceStrength", "reason"],
-          properties: {
-            name: { type: "string" },
-            decision: { type: "string", enum: ["verified", "needs_review", "reject"] },
-            classification: {
-              type: "string",
-              enum: ["demonstrated_skill", "education", "profile_fact", "credential", "evidence_gap", "unsupported"],
-            },
-            evidenceStrength: { type: "integer" },
-            reason: { type: "string" },
-          },
-        },
       },
     },
   },
@@ -611,12 +578,8 @@ export function App() {
   const skillAnalysisCurrent = Boolean(skillAnalysis.signature) && skillAnalysis.signature === currentSkillSignature;
   const skillAnalysisStale = Boolean(skillAnalysis.signature) && !skillAnalysisCurrent;
   const githubEvidencePresent = useMemo(() => hasGithubEvidence(input), [input]);
-  const currentGithubSkillCount = useMemo(
-    () => skillAnalysis.skills.filter((skill) => skill.evidence.some((item) => isGithubEvidenceTitle(input, item.sourceTitle))).length,
-    [input, skillAnalysis.skills],
-  );
-  const skillAnalysisMissingGithub = skillAnalysisCurrent && githubEvidencePresent && skillAnalysis.skills.length > 0 && !currentGithubSkillCount;
-  const useAiSkillGraph = skillAnalysisCurrent && skillAnalysis.skills.length > 0 && !skillAnalysisMissingGithub;
+  const skillAnalysisMissingGithub = false;
+  const useAiSkillGraph = skillAnalysisCurrent && skillAnalysis.skills.length > 0;
   const skillAnalysisSummaryOnly = skillAnalysisCurrent && !skillAnalysis.skills.length && quickResult.skills.length > 0;
   const result = useMemo(
     () => useAiSkillGraph ? { ...quickResult, skills: skillAnalysis.skills } : quickResult,
@@ -697,7 +660,7 @@ export function App() {
     if (
       !input.sources.length ||
       skillAnalysisBusy ||
-      (skillAnalysis.signature === signature && !skillAnalysisMissingGithub) ||
+      skillAnalysis.signature === signature ||
       lastAutoSkillAnalysisRef.current === signature
     ) {
       return;
@@ -709,7 +672,7 @@ export function App() {
     }, 700);
 
     return () => window.clearTimeout(timer);
-  }, [input, skillAnalysis.signature, skillAnalysisBusy, skillAnalysisMissingGithub]);
+  }, [input, skillAnalysis.signature, skillAnalysisBusy]);
 
   function updateField(field: keyof Pick<StudentInput, "name" | "headline" | "targetRole" | "links">, value: string) {
     setInput((current) => ({ ...current, [field]: value }));
@@ -783,18 +746,9 @@ export function App() {
           skillAnalysisResponseFormat,
           { maxOutputTokens: 5000 },
         );
-        const candidates = parseAiSkillCandidates(content, partition.profile);
-        const screened = screenSkillCandidates(candidates.skills, partition.profile);
-        const validationContent = screened.candidates.length
-          ? await askAi(
-              skillValidationMessages(screened.candidates, partition.label),
-              skillValidationResponseFormat,
-              { maxOutputTokens: 4000 },
-            )
-          : JSON.stringify({ verdicts: [] });
         return {
           ...partition,
-          analysis: applySkillValidation(candidates, screened, validationContent),
+          analysis: parseTaxonomySkillMappings(content, partition.profile),
         };
       });
       const analyses = settled.map((result, index) => {
@@ -804,26 +758,27 @@ export function App() {
           ...partition,
           analysis: {
             skills: existingSkillsForPartition(skillAnalysis.skills, partition.profile),
-            findings: skillAnalysis.findings.filter((finding) => finding.skill.evidence.some((item) => (
-              skillEvidenceSources(partition.profile).some((source) => source.title.toLowerCase() === item.sourceTitle.toLowerCase())
-            ))),
             summary: "",
             confidenceNotes: [`${partition.label} analysis failed: ${result.reason instanceof Error ? result.reason.message : "AI request failed."}`],
           },
         };
       });
       const merged = mergeSkillAnalyses(analyses);
+      const visibleSkills = applySkillUserEdits(merged.skills, skillAnalysis.skillEdits, skillAnalysis.hiddenSkillIds);
       setSkillAnalysis({
         ...merged,
+        skills: visibleSkills,
+        skillEdits: skillAnalysis.skillEdits,
+        hiddenSkillIds: skillAnalysis.hiddenSkillIds,
         signature,
         analyzedAt: new Date().toISOString(),
       });
-      const githubSkillCount = merged.skills.filter((skill) => skill.evidence.some((item) => isGithubEvidenceTitle(profile, item.sourceTitle))).length;
-      const nonGithubSkillCount = merged.skills.filter((skill) => skill.evidence.some((item) => !isGithubEvidenceTitle(profile, item.sourceTitle))).length;
+      const githubSkillCount = visibleSkills.filter((skill) => skill.evidence.some((item) => isGithubEvidenceTitle(profile, item.sourceTitle))).length;
+      const nonGithubSkillCount = visibleSkills.filter((skill) => skill.evidence.some((item) => !isGithubEvidenceTitle(profile, item.sourceTitle))).length;
       setStatus(
-        merged.skills.length
-          ? `Verified ${merged.skills.length} demonstrated skill${merged.skills.length === 1 ? "" : "s"}: ${githubSkillCount} citing GitHub and ${nonGithubSkillCount} citing other evidence. ${merged.findings.length} item${merged.findings.length === 1 ? "" : "s"} kept out of the graph.`
-          : `No demonstrated skills passed verification. ${merged.findings.length} item${merged.findings.length === 1 ? "" : "s"} kept out of the graph.`,
+        visibleSkills.length
+          ? `Mapped ${visibleSkills.length} skill${visibleSkills.length === 1 ? "" : "s"}: ${githubSkillCount} verified from GitHub and ${nonGithubSkillCount} extracted from resume, course, or quest evidence.`
+          : "No supported taxonomy skills were found in the supplied resume or GitHub repositories.",
       );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "AI skill analysis failed.");
@@ -832,38 +787,36 @@ export function App() {
     }
   }
 
-  function renameSkillFinding(id: string, name: string) {
-    setSkillAnalysis((current) => ({
-      ...current,
-      findings: current.findings.map((finding) => finding.id === id
-        ? { ...finding, skill: { ...finding.skill, name: cleanText(name, 80) } }
-        : finding),
-    }));
-  }
-
-  function dismissSkillFinding(id: string) {
-    setSkillAnalysis((current) => ({
-      ...current,
-      findings: current.findings.filter((finding) => finding.id !== id),
-    }));
-  }
-
-  function approveSkillFinding(id: string) {
+  function remapSkill(currentTaxonomyId: string, nextTaxonomyId: string) {
     setSkillAnalysis((current) => {
-      const finding = current.findings.find((item) => item.id === id);
-      if (!finding || !finding.skill.name.trim()) return current;
-      const approved: Skill = {
-        ...finding.skill,
-        score: Math.min(50, Math.max(35, finding.skill.score)),
-        studentConfirmed: true,
-      };
+      const node = findTaxonomyNode(nextTaxonomyId);
+      if (!node) return current;
       return {
         ...current,
-        skills: mergeSkills([...current.skills, approved]),
-        findings: current.findings.filter((item) => item.id !== id),
+        skills: mergeSkills(current.skills.map((skill) => skill.taxonomyId === currentTaxonomyId
+          ? {
+              ...skill,
+              taxonomyId: node.id,
+              name: node.name,
+              category: node.category,
+              terms: [node.name.toLowerCase(), ...node.aliases],
+              editedAt: new Date().toISOString(),
+            }
+          : skill)),
+        skillEdits: { ...current.skillEdits, [currentTaxonomyId]: node.id },
+        hiddenSkillIds: current.hiddenSkillIds.filter((id) => id !== currentTaxonomyId && id !== node.id),
       };
     });
-    setStatus("Kept as a student-confirmed, self-reported skill.");
+    setStatus("Skill mapping updated. Evidence provenance was preserved.");
+  }
+
+  function removeSkill(taxonomyId: string) {
+    setSkillAnalysis((current) => ({
+      ...current,
+      skills: current.skills.filter((skill) => skill.taxonomyId !== taxonomyId),
+      hiddenSkillIds: unique([...current.hiddenSkillIds, taxonomyId]),
+    }));
+    setStatus("Skill removed from the graph.");
   }
 
   async function searchJobs() {
@@ -1688,9 +1641,8 @@ export function App() {
               onGithubImport={handleGithubImport}
               onRemoveSource={removeSource}
               onAnalyzeSkills={() => analyzeSkillsWithAi(input, false)}
-              onApproveSkillFinding={approveSkillFinding}
-              onDismissSkillFinding={dismissSkillFinding}
-              onRenameSkillFinding={renameSkillFinding}
+              onRemapSkill={remapSkill}
+              onRemoveSkill={removeSkill}
               onGenerateQuestBoard={generateQuestBoard}
               onProofChange={updateProjectProof}
               onPhotoProof={addProjectPhotos}
@@ -1795,83 +1747,6 @@ function TrustBadge({ metadata, compact = false }: { metadata: TrustMetadata; co
   );
 }
 
-function SkillReviewSections({
-  findings,
-  onApprove,
-  onDismiss,
-  onRename,
-  onAddEvidence,
-}: {
-  findings: SkillFinding[];
-  onApprove: (id: string) => void;
-  onDismiss: (id: string) => void;
-  onRename: (id: string, name: string) => void;
-  onAddEvidence: () => void;
-}) {
-  const profileInformation = findings.filter((finding) => ["education", "profile_fact", "credential"].includes(finding.kind));
-  const evidenceGaps = findings.filter((finding) => finding.kind === "evidence_gap");
-  const reviewItems = findings.filter((finding) => finding.kind === "needs_review");
-
-  if (!findings.length) return null;
-
-  return (
-    <div className="skill-review-sections">
-      {!!reviewItems.length && (
-        <section className="skill-review-panel">
-          <div>
-            <strong>Needs review</strong>
-            <p>These suggestions were kept out of the public graph because the evidence did not clearly demonstrate the capability.</p>
-          </div>
-          <div className="skill-review-list">
-            {reviewItems.map((finding) => (
-              <article key={finding.id}>
-                <label>
-                  Suggested skill
-                  <input value={finding.skill.name} onChange={(event) => onRename(finding.id, event.target.value)} />
-                </label>
-                <p>{finding.reason}</p>
-                <small>{finding.skill.evidence[0]?.quote || "No reliable supporting quote."}</small>
-                <div className="skill-review-actions">
-                  <button type="button" onClick={() => onApprove(finding.id)}><Check size={15} />Keep as self-reported</button>
-                  <button type="button" className="secondary" onClick={onAddEvidence}><FileUp size={15} />Add stronger evidence</button>
-                  <button type="button" className="icon-button" onClick={() => onDismiss(finding.id)} aria-label={`Dismiss ${finding.skill.name}`}><Trash2 size={15} /></button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-      {!!profileInformation.length && (
-        <section className="skill-finding-panel">
-          <strong>Profile information — not skills</strong>
-          <div>
-            {profileInformation.map((finding) => (
-              <article key={finding.id}>
-                <span>{finding.kind.replace("_", " ")}</span>
-                <b>{finding.skill.name}</b>
-                <p>{finding.reason}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-      {!!evidenceGaps.length && (
-        <section className="skill-finding-panel">
-          <strong>Evidence gaps — not skills</strong>
-          <div>
-            {evidenceGaps.map((finding) => (
-              <article key={finding.id}>
-                <b>{finding.skill.name}</b>
-                <p>{finding.reason}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
 function trustMetadata(level: EvidenceTrustLevel, reason?: string): TrustMetadata {
   const base = trustTaxonomy.find((tier) => tier.level === level) ?? trustTaxonomy[0];
   return reason ? { ...base, description: reason } : base;
@@ -1904,9 +1779,6 @@ function trustForSkillSignal(input: StudentInput, sourceTitle: string): TrustMet
 }
 
 function strongestSkillTrust(input: StudentInput, skill: Skill): TrustMetadata {
-  if (skill.studentConfirmed) {
-    return trustMetadata("self_reported", "The student kept this suggestion after automated verification could not confirm it.");
-  }
   const order: Record<EvidenceTrustLevel, number> = {
     self_reported: 0,
     linked: 1,
@@ -1944,9 +1816,8 @@ function DashboardPage(props: {
   onGithubImport: () => void;
   onRemoveSource: (id: string) => void;
   onAnalyzeSkills: () => void;
-  onApproveSkillFinding: (id: string) => void;
-  onDismissSkillFinding: (id: string) => void;
-  onRenameSkillFinding: (id: string, name: string) => void;
+  onRemapSkill: (currentTaxonomyId: string, nextTaxonomyId: string) => void;
+  onRemoveSkill: (taxonomyId: string) => void;
   onGenerateQuestBoard: () => void;
   onProofChange: (project: ProjectRecommendation, proofUrl: string) => void;
   onPhotoProof: (project: ProjectRecommendation, files: FileList | null) => void;
@@ -1979,9 +1850,8 @@ function DashboardPage(props: {
     onGithubImport,
     onRemoveSource,
     onAnalyzeSkills,
-    onApproveSkillFinding,
-    onDismissSkillFinding,
-    onRenameSkillFinding,
+    onRemapSkill,
+    onRemoveSkill,
     onGenerateQuestBoard,
     onProofChange,
     onPhotoProof,
@@ -2056,7 +1926,7 @@ function DashboardPage(props: {
             <div className="section-title"><Network size={20} /><h2>AI Skill Graph</h2></div>
             <div className="skill-analysis-actions">
               <span className={useAiSkillGraph ? "ai-current" : skillAnalysisStale || skillAnalysisMissingGithub ? "ai-stale" : "quick-scan"}>
-                {skillAnalysisBusy ? "Validating evidence" : useAiSkillGraph ? "Evidence validated" : skillAnalysisMissingGithub ? "GitHub not cited" : skillAnalysisSummaryOnly ? "AI reviewed" : skillAnalysisStale ? "Evidence changed" : "Quick scan"}
+                {skillAnalysisBusy ? "Classifying evidence" : useAiSkillGraph ? "Taxonomy mapped" : skillAnalysisSummaryOnly ? "AI reviewed" : skillAnalysisStale ? "Evidence changed" : "Quick scan"}
               </span>
               <button type="button" onClick={onAnalyzeSkills} disabled={skillAnalysisBusy || !hasSkillEvidence(input)}>
                 {skillAnalysisBusy ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
@@ -2066,9 +1936,6 @@ function DashboardPage(props: {
           </div>
           {skillAnalysisSummaryOnly && (
             <p className="skill-analysis-notice">AI returned an assessment but no exact-quote skill nodes.</p>
-          )}
-          {skillAnalysisMissingGithub && (
-            <p className="skill-analysis-notice">The saved analysis did not cite GitHub evidence, so it is not being used for the graph. Refresh analysis to generate repository-backed cards.</p>
           )}
           {skillAnalysisStale && (
             <p className="skill-analysis-notice">The evidence or profile changed. Refresh the AI analysis before relying on these matches.</p>
@@ -2090,22 +1957,33 @@ function DashboardPage(props: {
           {result.skills.length ? (
             <div className="skill-list">
               {result.skills.map((skill) => (
-                <article className="skill-row" key={skill.name}>
+                <article className="skill-row" key={skill.taxonomyId ?? skill.name}>
                   <div>
                     <div className="skill-label-row">
                       <span>{skill.category}</span>
                       <TrustBadge metadata={strongestSkillTrust(input, skill)} />
                     </div>
-                    <strong>{skill.name}</strong>
+                    <div className="skill-card-title">
+                      <strong>{skill.name}</strong>
+                      <button type="button" className="icon-button" onClick={() => onRemoveSkill(skill.taxonomyId ?? normalizeSkillKey(skill.name))} aria-label={`Remove ${skill.name}`}><Trash2 size={15} /></button>
+                    </div>
+                    <label className="skill-taxonomy-editor">
+                      Correct mapped skill
+                      <select value={skill.taxonomyId ?? ""} onChange={(event) => onRemapSkill(skill.taxonomyId ?? normalizeSkillKey(skill.name), event.target.value)}>
+                        {skillTaxonomyGroups.map((group) => (
+                          <optgroup key={group.category} label={group.category}>
+                            {group.nodes.map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </label>
                     <small className="legacy-skill-signal">
                       {skill.evidence[0]?.quote ?? skill.terms.join(", ")}
                       {skill.evidence[0]?.sourceTitle ? ` — ${skill.evidence[0].sourceTitle}` : ""}
                     </small>
                     <div className="skill-signals">
                       {skill.evidence.length ? skill.evidence.map((signal) => {
-                        const trust = skill.studentConfirmed
-                          ? trustMetadata("self_reported", "Student-confirmed after automated verification could not confirm the capability.")
-                          : trustForSkillSignal(input, signal.sourceTitle);
+                        const trust = trustForSkillSignal(input, signal.sourceTitle);
                         return (
                           <div key={`${signal.sourceTitle}-${signal.quote}`}>
                             <TrustBadge metadata={trust} compact />
@@ -2126,14 +2004,7 @@ function DashboardPage(props: {
                 </article>
               ))}
             </div>
-          ) : <p className="empty">Import GitHub, resume files, or detailed evidence notes to generate verified skills.</p>}
-          <SkillReviewSections
-            findings={skillAnalysis.findings}
-            onApprove={onApproveSkillFinding}
-            onDismiss={onDismissSkillFinding}
-            onRename={onRenameSkillFinding}
-            onAddEvidence={() => resumeInputRef.current?.click()}
-          />
+          ) : <p className="empty">Import a resume and GitHub profile to map supported skills.</p>}
         </article>
 
         <article className="panel source-panel">
@@ -3172,27 +3043,18 @@ function skillAnalysisMessages(profile: StudentInput, partitionLabel: string): A
     {
       role: "system",
       content: [
-        "You are SparkPath's evidence-grounded career skills analyst.",
+        "You are SparkPath's evidence parser and taxonomy classifier.",
         `Analyze only the supplied ${partitionLabel} partition. Do not assume evidence from sources outside this partition.`,
-        "Identify skills the student has actually demonstrated, not skills merely mentioned in a target job title.",
-        "Return only positive, usable capabilities. Education status, credentials, URLs, profile presence, aspirations, missing evidence, and statements that no skill was found are not skills.",
-        "Every skill must cite an exact sourceTitle from the supplied evidence and a short verbatim quote from that source.",
-        "Create the skill cards and their category labels yourself. Use specific skill names and specific category labels derived from the evidence.",
-        "Do not reuse a predefined category taxonomy. Invent concise category labels from the evidence.",
-        "The skills array is the data source for the visual skill graph. Do not rely on the summary to communicate skills.",
+        "You may only classify evidence into taxonomy IDs from the supplied taxonomy. Never invent, rename, or combine skill labels.",
+        "Every mapping must cite an exact sourceTitle and a short verbatim quote copied from that source.",
         "Each evidence quote must be an exact contiguous phrase or sentence copied from the matching source content.",
-        "If you cannot provide an exact quote for a skill, omit that skill.",
-        "For GitHub evidence, repository language statistics, dependency manifests, config files, file paths, README excerpts, source excerpts, and recent commit messages are valid evidence of demonstrated technical work.",
-        "GitHub profile bio, stars, followers, or a technology name alone are weak evidence; score those low unless repository files or README text support the skill.",
-        "Do not invent experience, tools, outcomes, credentials, or proficiency.",
-        "Merge only genuinely overlapping skills within this partition and use specific, employer-recognizable names.",
-        "Category should be a concise AI-created label based only on the evidence.",
-        "The score is evidence strength, not proficiency. Score consistently: 35 exposure, 50 guided practice, 65 independent application, 80 repeated delivery or measured impact, 90 advanced repeated impact.",
-        "Return every distinct demonstrated skill supported by this evidence. Do not impose a preferred count or omit a supported skill merely to keep the response short.",
-        "Separate materially different capabilities, but do not create duplicates or trivial variations of the same skill.",
-        "For a GitHub repository, inspect all supplied README, language, dependency, configuration, file-tree, source-code, and commit evidence before deciding which skills are demonstrated.",
+        "For resume evidence, classify explicit skills lists and project descriptions. These mappings remain self-reported.",
+        "For GitHub evidence, classify repository-level signals from source code, imports, manifests, configuration, tests, implementation file paths, README implementation descriptions, and meaningful commits.",
+        "Do not map profile biographies, stars, followers, URLs, education status, aspirations, evidence gaps, filenames by themselves, or generic commit activity.",
+        "Return every supported taxonomy mapping. Omit unsupported mappings silently and never output negative or gap nodes.",
         "The target role is context for relevance only and is never evidence.",
-        "The summary must describe only skills returned in the skills array. If the array is empty, say the evidence is insufficient.",
+        "ALLOWED TAXONOMY:",
+        taxonomyPromptList(),
       ].join(" "),
     },
     {
@@ -3210,10 +3072,6 @@ function existingSkillsForPartition(skills: Skill[], profile: StudentInput) {
 function mergeSkillAnalyses(partitions: CompletedSkillAnalysisPartition[]): ParsedSkillAnalysis {
   return {
     skills: mergeSkills(partitions.flatMap(({ analysis }) => analysis.skills)),
-    findings: uniqueBy(
-      partitions.flatMap(({ analysis }) => analysis.findings),
-      (finding) => `${finding.kind}:${normalizeSkillKey(finding.skill.name)}:${finding.skill.evidence[0]?.sourceTitle ?? ""}`,
-    ),
     summary: partitions
       .filter(({ analysis }) => analysis.summary)
       .map(({ label, analysis }) => `${label}: ${analysis.summary}`)
@@ -3227,7 +3085,7 @@ function mergeSkillAnalyses(partitions: CompletedSkillAnalysisPartition[]): Pars
 function mergeSkills(skills: Skill[]) {
   const merged = new Map<string, Skill>();
   skills.forEach((skill) => {
-    const key = normalizeSkillKey(skill.name);
+    const key = skill.taxonomyId ?? normalizeSkillKey(skill.name);
     const current = merged.get(key);
     if (!current) {
       merged.set(key, skill);
@@ -3235,8 +3093,7 @@ function mergeSkills(skills: Skill[]) {
     }
     merged.set(key, {
       ...(skill.score > current.score ? skill : current),
-      score: Math.max(current.score, skill.score),
-      studentConfirmed: current.studentConfirmed || skill.studentConfirmed,
+      score: calculateMergedEvidenceStrength(current, skill),
       terms: unique([...current.terms, ...skill.terms]),
       evidence: uniqueBy(
         [...current.evidence, ...skill.evidence],
@@ -3245,6 +3102,37 @@ function mergeSkills(skills: Skill[]) {
     });
   });
   return Array.from(merged.values()).sort((left, right) => right.score - left.score);
+}
+
+function calculateMergedEvidenceStrength(left: Skill, right: Skill) {
+  const evidence = uniqueBy(
+    [...left.evidence, ...right.evidence],
+    (item) => `${item.sourceTitle.toLowerCase()}:${normalizeEvidenceText(item.quote)}`,
+  );
+  const sourceCount = new Set(evidence.map((item) => item.sourceTitle.toLowerCase())).size;
+  const hasGithub = evidence.some((item) => /github/i.test(item.sourceTitle));
+  const hasOther = evidence.some((item) => !/github/i.test(item.sourceTitle));
+  return Math.min(95, Math.max(left.score, right.score) + Math.max(0, sourceCount - 1) * 5 + (hasGithub && hasOther ? 8 : 0));
+}
+
+function applySkillUserEdits(skills: Skill[], edits: Record<string, string>, hiddenSkillIds: string[]) {
+  const hidden = new Set(hiddenSkillIds);
+  return mergeSkills(skills.flatMap((skill) => {
+    const originalId = skill.taxonomyId ?? normalizeSkillKey(skill.name);
+    if (hidden.has(originalId)) return [];
+    const editedId = edits[originalId];
+    if (!editedId) return [skill];
+    const node = findTaxonomyNode(editedId);
+    if (!node || hidden.has(node.id)) return [];
+    return [{
+      ...skill,
+      taxonomyId: node.id,
+      name: node.name,
+      category: node.category,
+      terms: [node.name.toLowerCase(), ...node.aliases],
+      editedAt: skill.editedAt ?? new Date().toISOString(),
+    }];
+  }));
 }
 
 function normalizeSkillKey(name: string) {
@@ -3363,45 +3251,37 @@ function takeLinesWithinBudget(lines: string[], maxCharacters: number) {
   return selected.join("\n");
 }
 
-function parseAiSkillCandidates(content: string, input: StudentInput): ParsedSkillAnalysis {
+function parseTaxonomySkillMappings(content: string, input: StudentInput): ParsedSkillAnalysis {
   const parsed = parseStructuredJson(content);
   const sources = skillEvidenceSources(input);
   const seen = new Set<string>();
   const skills = (Array.isArray(parsed.skills) ? parsed.skills : [])
     .map((candidate: any): Skill | null => {
-      const name = cleanText(candidate?.name, 80);
-      const category = cleanText(candidate?.category, 48);
-      const score = Math.max(0, Math.min(100, Math.round(Number(candidate?.score ?? 0))));
-      const key = name.toLowerCase();
-      if (!name || !category || seen.has(key) || !Number.isFinite(score)) return null;
-
-      const terms = (Array.isArray(candidate?.terms) ? candidate.terms : [])
-        .map((term: unknown) => cleanText(term, 40).toLowerCase())
-        .filter(Boolean)
-        .filter((term: string, index: number, all: string[]) => all.indexOf(term) === index)
-        .slice(0, 6);
+      const node = findTaxonomyNode(cleanText(candidate?.taxonomyId, 80));
+      if (!node || seen.has(node.id)) return null;
 
       const exactEvidence = (Array.isArray(candidate?.evidence) ? candidate.evidence : [])
         .map((item: any) => verifySkillEvidence(item, sources))
         .filter((item: Skill["evidence"][number] | null): item is Skill["evidence"][number] => Boolean(item))
-        .slice(0, 3);
+        .slice(0, 6);
       if (!exactEvidence.length) return null;
 
-      seen.add(key);
-      return {
-        name,
-        category,
-        score,
-        terms: terms.length ? terms : [name.toLowerCase()],
+      seen.add(node.id);
+      const skill: Skill = {
+        taxonomyId: node.id,
+        name: node.name,
+        category: node.category,
+        score: 0,
+        terms: [node.name.toLowerCase(), ...node.aliases],
         evidence: exactEvidence,
       };
+      return { ...skill, score: calculateEvidenceStrength(skill, input) };
     })
     .filter((skill: Skill | null): skill is Skill => Boolean(skill))
     .sort((left: Skill, right: Skill) => right.score - left.score);
 
   return {
     skills,
-    findings: [],
     summary: cleanText(parsed.summary, 360),
     confidenceNotes: (Array.isArray(parsed.confidenceNotes) ? parsed.confidenceNotes : [])
       .map((note: unknown) => cleanText(note, 180))
@@ -3488,6 +3368,18 @@ function classifyGithubEvidence(skill: Skill): "direct_artifact" | "implementati
     return "implementation_statement";
   }
   return "metadata";
+}
+
+function calculateEvidenceStrength(skill: Skill, input: StudentInput) {
+  const level = classifyGithubEvidence(skill);
+  const hasGithub = skill.evidence.some((item) => isGithubEvidenceTitle(input, item.sourceTitle));
+  const hasCourse = skill.evidence.some((item) => input.sources.some((source) => source.type === "course" && source.title.toLowerCase() === item.sourceTitle.toLowerCase()));
+  const hasQuest = skill.evidence.some((item) => input.sources.some((source) => source.type === "quest" && source.title.toLowerCase() === item.sourceTitle.toLowerCase()));
+  let base = 35;
+  if (hasGithub) base = level === "direct_artifact" ? 68 : level === "implementation_statement" ? 55 : 42;
+  else if (hasQuest) base = 58;
+  else if (hasCourse) base = 48;
+  return Math.min(90, base + Math.max(0, skill.evidence.length - 1) * 3);
 }
 
 function deterministicEvidenceStrength(skill: Skill) {
@@ -3591,7 +3483,6 @@ function applySkillValidation(
 
   return {
     skills: verified,
-    findings,
     summary: extracted.summary,
     confidenceNotes: extracted.confidenceNotes,
   };
@@ -4255,22 +4146,23 @@ function loadApplications(): JobApplication[] {
 
 function loadSkillAnalysis(): SkillAnalysisState {
   const saved = localStorage.getItem(SKILL_ANALYSIS_KEY);
-  if (!saved) return { skills: [], findings: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
+  if (!saved) return { skills: [], skillEdits: {}, hiddenSkillIds: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
   try {
     const parsed = JSON.parse(saved);
     if (hasLegacyGenericSkillCards(parsed.skills)) {
-      return { skills: [], findings: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
+      return { skills: [], skillEdits: {}, hiddenSkillIds: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
     }
     return {
       skills: Array.isArray(parsed.skills) ? parsed.skills : [],
-      findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+      skillEdits: parsed.skillEdits && typeof parsed.skillEdits === "object" ? parsed.skillEdits : {},
+      hiddenSkillIds: Array.isArray(parsed.hiddenSkillIds) ? parsed.hiddenSkillIds : [],
       summary: typeof parsed.summary === "string" ? parsed.summary : "",
       confidenceNotes: Array.isArray(parsed.confidenceNotes) ? parsed.confidenceNotes : [],
       signature: typeof parsed.signature === "string" ? parsed.signature : "",
       analyzedAt: typeof parsed.analyzedAt === "string" ? parsed.analyzedAt : "",
     };
   } catch {
-    return { skills: [], findings: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
+    return { skills: [], skillEdits: {}, hiddenSkillIds: [], summary: "", confidenceNotes: [], signature: "", analyzedAt: "" };
   }
 }
 

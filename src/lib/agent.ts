@@ -53,11 +53,12 @@ export type StudentInput = {
 };
 
 export type Skill = {
+  taxonomyId?: string;
   name: string;
   category: string;
   score: number;
   terms: string[];
-  studentConfirmed?: boolean;
+  editedAt?: string;
   evidence: Array<{
     sourceTitle: string;
     quote: string;

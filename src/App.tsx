@@ -171,14 +171,27 @@ type CompletedSkillAnalysisPartition = SkillAnalysisPartition & {
 type CourseLevel = "Beginner" | "Intermediate" | "Advanced";
 type CourseDepth = "Quick start" | "Standard" | "Deep dive";
 
+type ResearchSource = {
+  title: string;
+  url: string;
+};
+
 type CourseLessonContent = {
   introduction: string;
   sections: Array<{
     heading: string;
     body: string;
   }>;
+  workedExample: string;
+  commonMisconceptions: string[];
   exercise: string;
+  knowledgeCheck: Array<{
+    question: string;
+    answer: string;
+  }>;
   keyTakeaways: string[];
+  sources: ResearchSource[];
+  researchedAt: string;
 };
 
 type CourseLesson = {
@@ -207,6 +220,7 @@ type GeneratedCourse = {
   level: CourseLevel;
   depth: CourseDepth;
   modules: CourseModule[];
+  sources: ResearchSource[];
   createdAt: string;
 };
 
@@ -366,7 +380,7 @@ const courseLessonResponseFormat: AiResponseFormat = {
   schema: {
     type: "object",
     additionalProperties: false,
-    required: ["introduction", "sections", "exercise", "keyTakeaways"],
+    required: ["introduction", "sections", "workedExample", "commonMisconceptions", "exercise", "knowledgeCheck", "keyTakeaways"],
     properties: {
       introduction: { type: "string" },
       sections: {
@@ -381,7 +395,21 @@ const courseLessonResponseFormat: AiResponseFormat = {
           },
         },
       },
+      workedExample: { type: "string" },
+      commonMisconceptions: { type: "array", items: { type: "string" } },
       exercise: { type: "string" },
+      knowledgeCheck: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["question", "answer"],
+          properties: {
+            question: { type: "string" },
+            answer: { type: "string" },
+          },
+        },
+      },
       keyTakeaways: { type: "array", items: { type: "string" } },
     },
   },
@@ -864,11 +892,14 @@ export function App() {
     setCourseBusy(true);
     setStatus(`Designing a ${courseLevel.toLowerCase()} course for ${topic}...`);
     try {
-      const content = await askAi([
+      const research = await askResearchedAi([
         {
           role: "system",
           content: [
             "You are SparkPath's curriculum architect.",
+            "Search the live web before designing the course.",
+            "Ground the curriculum in authoritative current sources such as official documentation, university materials, standards bodies, peer-reviewed publications, reputable textbooks, or recognized professional organizations.",
+            "Avoid building the curriculum from generic blog summaries when primary or authoritative sources exist.",
             "Create a coherent, practical course that teaches the requested topic from the learner's selected level.",
             "The course must progress logically, include applied exercises, and name concrete skills practiced in each module.",
             "Do not write full lesson content yet. Create a strong course outline that can be expanded lesson by lesson.",
@@ -889,7 +920,7 @@ export function App() {
           ].join("\n"),
         },
       ], courseOutlineResponseFormat);
-      const generated = parseGeneratedCourse(content, topic, courseLevel, courseDepth);
+      const generated = parseGeneratedCourse(research.content, topic, courseLevel, courseDepth, research.sources);
       const firstLessonId = generated.modules[0]?.lessons[0]?.id ?? "";
       setCourseState((current) => ({
         courses: [generated, ...current.courses],
@@ -920,21 +951,25 @@ export function App() {
     if (!course || !lesson) return;
 
     setCourseState((current) => ({ ...current, activeCourseId: courseId, activeLessonId: lessonId }));
-    if (lesson.content) return;
+    if (lesson.content?.researchedAt) return;
 
     setLessonBusy(lessonId);
-    setStatus(`Writing lesson: ${lesson.title}...`);
+    setStatus(`Researching authoritative sources for ${lesson.title}...`);
     try {
       const module = course.modules.find((item) => item.lessons.some((candidate) => candidate.id === lessonId));
-      const content = await askAi([
+      const research = await askResearchedAi([
         {
           role: "system",
           content: [
-            "You are SparkPath's expert course instructor.",
-            "Write a clear, accurate lesson for the supplied course context.",
-            "Teach concepts before using them, use concrete examples, and end with a practical exercise.",
-            "The body fields may use concise markdown. Do not mention that the lesson was AI generated.",
-            "Return exactly three focused sections. Keep each section under 180 words so the response is complete.",
+            "You are SparkPath's research-driven course instructor.",
+            "You must search the live web before writing the lesson and synthesize several reliable sources.",
+            "Prioritize primary and authoritative sources: official documentation, standards, universities, peer-reviewed research, government agencies, respected professional organizations, and original technical specifications.",
+            "Use current sources where the topic changes over time. Cross-check important claims rather than relying on one page.",
+            "Write a substantial self-contained lesson that teaches the learner, not a brief summary or outline.",
+            "Define terminology, explain why concepts work, connect ideas, show concrete examples, discuss tradeoffs, and include a worked example.",
+            "Return four to six focused sections. Each section should contain meaningful teaching detail, not bullet-point fragments.",
+            "Add common misconceptions, a practical exercise, and three knowledge-check questions with answers.",
+            "Do not claim the learner demonstrated a skill merely by reading. Do not mention that the lesson was AI generated.",
           ].join(" "),
         },
         {
@@ -948,10 +983,12 @@ export function App() {
             `Lesson summary: ${lesson.summary}`,
             `Objectives: ${lesson.objectives.join("; ")}`,
             `Target length: approximately ${lesson.estimatedMinutes} minutes of reading and practice.`,
+            `Course research sources already consulted: ${(course.sources ?? []).map((source) => source.url).slice(0, 10).join(", ") || "None yet"}`,
+            "Research this specific lesson independently. Make the final lesson detailed enough that a learner can study from it without asking a chatbot for the missing explanation.",
           ].join("\n"),
         },
       ], courseLessonResponseFormat);
-      const lessonContent = parseCourseLesson(content);
+      const lessonContent = parseCourseLesson(research.content, research.sources);
       setCourseState((current) => ({
         ...current,
         courses: current.courses.map((item) => item.id === courseId ? {
@@ -1921,7 +1958,11 @@ function CoursesPage(props: {
         <div>
           <p>{activeCourse.level} · {activeCourse.depth}</p>
           <h1>{activeCourse.title}</h1>
-          <span>{activeCourse.modules.length} modules · {progress.total} lessons</span>
+          <span>
+            {activeCourse.modules.length} modules · {progress.total} lessons · {(activeCourse.sources ?? []).length
+              ? `${activeCourse.sources.length} curriculum sources`
+              : "lesson research generated on demand"}
+          </span>
         </div>
         <div className="course-total-progress">
           <strong>{progress.percent}%</strong>
@@ -1985,36 +2026,86 @@ function CoursesPage(props: {
               {lessonBusy === activeLesson.id ? (
                 <div className="lesson-loading">
                   <Loader2 size={28} className="spin" />
-                  <h3>Preparing this lesson</h3>
-                  <p>Building explanations, examples, and an applied exercise.</p>
+                  <h3>Researching this lesson</h3>
+                  <p>Searching authoritative sources, cross-checking concepts, and building a complete lesson.</p>
                 </div>
-              ) : activeLesson.content ? (
+              ) : activeLesson.content?.researchedAt ? (
                 <div className="lesson-content">
-                  <p className="lesson-introduction">{activeLesson.content.introduction}</p>
+                  <div className="research-badge">
+                    <Search size={17} />
+                    <span>Web researched</span>
+                    <strong>{activeLesson.content.sources?.length ?? 0} sources</strong>
+                  </div>
+                  <p className="lesson-introduction">{lessonDisplayText(activeLesson.content.introduction)}</p>
                   {activeLesson.content.sections.map((section) => (
                     <section key={section.heading}>
-                      <h3>{section.heading}</h3>
-                      {section.body.split("\n").filter(Boolean).map((paragraph, index) => <p key={`${section.heading}-${index}`}>{paragraph}</p>)}
+                      <h3>{lessonDisplayText(section.heading)}</h3>
+                      {section.body.split("\n").filter(Boolean).map((paragraph, index) => <p key={`${section.heading}-${index}`}>{lessonDisplayText(paragraph)}</p>)}
                     </section>
                   ))}
+                  {activeLesson.content.workedExample && (
+                    <aside className="lesson-worked-example">
+                      <span><BookMarked size={19} />Worked example</span>
+                      {activeLesson.content.workedExample.split("\n").filter(Boolean).map((paragraph, index) => <p key={`worked-${index}`}>{lessonDisplayText(paragraph)}</p>)}
+                    </aside>
+                  )}
+                  {!!activeLesson.content.commonMisconceptions?.length && (
+                    <section className="lesson-misconceptions">
+                      <h3>Common misconceptions</h3>
+                      <ul>{activeLesson.content.commonMisconceptions.map((item) => <li key={item}>{lessonDisplayText(item)}</li>)}</ul>
+                    </section>
+                  )}
                   <aside className="lesson-exercise">
                     <span><Target size={19} />Practical exercise</span>
-                    <p>{activeLesson.content.exercise}</p>
+                    <p>{lessonDisplayText(activeLesson.content.exercise)}</p>
                   </aside>
+                  {!!activeLesson.content.knowledgeCheck?.length && (
+                    <section className="lesson-knowledge-check">
+                      <h3>Check your understanding</h3>
+                      <div>
+                        {activeLesson.content.knowledgeCheck.map((item, index) => (
+                          <details key={item.question}>
+                            <summary><span>{index + 1}</span>{lessonDisplayText(item.question)}</summary>
+                            <p>{lessonDisplayText(item.answer)}</p>
+                          </details>
+                        ))}
+                      </div>
+                    </section>
+                  )}
                   <section className="lesson-takeaways">
                     <h3>Key takeaways</h3>
                     <ul>
-                      {activeLesson.content.keyTakeaways.map((takeaway) => <li key={takeaway}><Check size={16} />{takeaway}</li>)}
+                      {activeLesson.content.keyTakeaways.map((takeaway) => <li key={takeaway}><Check size={16} />{lessonDisplayText(takeaway)}</li>)}
                     </ul>
                   </section>
+                  {!!activeLesson.content.sources?.length && (
+                    <section className="lesson-sources">
+                      <div>
+                        <p className="eyebrow">Research library</p>
+                        <h3>Sources used for this lesson</h3>
+                        <p>Open the original material to go deeper or verify the lesson.</p>
+                      </div>
+                      <ol>
+                        {activeLesson.content.sources.map((source) => (
+                          <li key={source.url}>
+                            <a href={source.url} target="_blank" rel="noreferrer">
+                              <span>{source.title}</span>
+                              <small>{sourceDomain(source.url)}</small>
+                              <ExternalLink size={15} />
+                            </a>
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
+                  )}
                 </div>
               ) : (
                 <div className="lesson-preview">
                   <BookOpen size={34} />
-                  <h3>Lesson objectives</h3>
+                  <h3>{activeLesson.content ? "Upgrade this lesson with web research" : "Lesson objectives"}</h3>
                   <ul>{activeLesson.objectives.map((objective) => <li key={objective}>{objective}</li>)}</ul>
                   <button type="button" onClick={() => onOpenLesson(activeCourse.id, activeLesson.id)}>
-                    <Sparkles size={18} />Generate and start lesson
+                    <Search size={18} />{activeLesson.content ? "Research and replace lesson" : "Research and start lesson"}
                   </button>
                 </div>
               )}
@@ -2215,6 +2306,42 @@ async function askAi(messages: AiMessage[], responseFormat?: AiResponseFormat) {
     throw new Error(data.error || "AI request returned no generated content. Try again, or increase OPENAI_MAX_OUTPUT_TOKENS.");
   }
   return data.content;
+}
+
+async function askResearchedAi(messages: AiMessage[], responseFormat?: AiResponseFormat) {
+  const response = await fetch("/api/ai", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages, responseFormat, webSearch: true }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Web research request failed.");
+  if (typeof data.content !== "string" || !data.content.trim()) {
+    throw new Error(data.error || "Web research returned no usable lesson content.");
+  }
+  return {
+    content: data.content,
+    sources: normalizeResearchSources(data.sources),
+  };
+}
+
+function normalizeResearchSources(value: unknown): ResearchSource[] {
+  if (!Array.isArray(value)) return [];
+  return uniqueBy(
+    value.map((source: any) => ({
+      title: cleanText(source?.title, 180) || sourceDomain(String(source?.url ?? "")),
+      url: cleanUrl(source?.url),
+    })).filter((source: ResearchSource) => source.title && source.url),
+    (source) => source.url,
+  ).slice(0, 16);
+}
+
+function sourceDomain(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "Web source";
+  }
 }
 
 function profileBrief(input: StudentInput, result: ReturnType<typeof analyzeStudent>) {
@@ -2656,7 +2783,7 @@ function normalizeQuestResources(resources: unknown, title: string): ProjectReco
   return normalized.slice(0, 5);
 }
 
-function parseGeneratedCourse(content: string, topic: string, level: CourseLevel, depth: CourseDepth): GeneratedCourse {
+function parseGeneratedCourse(content: string, topic: string, level: CourseLevel, depth: CourseDepth, sources: ResearchSource[]): GeneratedCourse {
   const parsed = parseStructuredJson(content);
   const courseId = crypto.randomUUID();
   const modules = (Array.isArray(parsed.modules) ? parsed.modules : [])
@@ -2705,11 +2832,12 @@ function parseGeneratedCourse(content: string, topic: string, level: CourseLevel
     level,
     depth,
     modules,
+    sources,
     createdAt: new Date().toISOString(),
   };
 }
 
-function parseCourseLesson(content: string): CourseLessonContent {
+function parseCourseLesson(content: string, sources: ResearchSource[]): CourseLessonContent {
   const parsed = parseStructuredJson(content);
   const introduction = String(parsed.introduction ?? "").trim().slice(0, 1800);
   const sections = (Array.isArray(parsed.sections) ? parsed.sections : [])
@@ -2719,14 +2847,35 @@ function parseCourseLesson(content: string): CourseLessonContent {
     }))
     .filter((section: CourseLessonContent["sections"][number]) => section.heading && section.body)
     .slice(0, 7);
+  const workedExample = String(parsed.workedExample ?? "").trim().slice(0, 5000);
+  const commonMisconceptions = Array.isArray(parsed.commonMisconceptions)
+    ? parsed.commonMisconceptions.map((item: unknown) => cleanText(item, 320)).filter(Boolean).slice(0, 8)
+    : [];
   const exercise = String(parsed.exercise ?? "").trim().slice(0, 1800);
+  const knowledgeCheck = (Array.isArray(parsed.knowledgeCheck) ? parsed.knowledgeCheck : [])
+    .map((item: any) => ({
+      question: cleanText(item?.question, 300),
+      answer: cleanText(item?.answer, 700),
+    }))
+    .filter((item: CourseLessonContent["knowledgeCheck"][number]) => item.question && item.answer)
+    .slice(0, 6);
   const keyTakeaways = Array.isArray(parsed.keyTakeaways)
     ? parsed.keyTakeaways.map((item: unknown) => cleanText(item, 180)).filter(Boolean).slice(0, 8)
     : [];
-  if (!introduction || sections.length < 2 || !exercise || !keyTakeaways.length) {
+  if (!introduction || sections.length < 3 || !workedExample || !exercise || knowledgeCheck.length < 2 || !keyTakeaways.length) {
     throw new Error("AI did not return a complete lesson. Try opening it again.");
   }
-  return { introduction, sections, exercise, keyTakeaways };
+  return {
+    introduction,
+    sections,
+    workedExample,
+    commonMisconceptions,
+    exercise,
+    knowledgeCheck,
+    keyTakeaways,
+    sources,
+    researchedAt: new Date().toISOString(),
+  };
 }
 
 function courseLessonCount(course: GeneratedCourse) {
@@ -2902,6 +3051,16 @@ function parseStructuredJson(content: string) {
 
 function cleanText(value: unknown, maxLength: number) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function lessonDisplayText(value: string) {
+  return value
+    .replace(/```[a-z0-9_-]*\s*/gi, "")
+    .replace(/```/g, "")
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
 }
 
 function cleanUrl(value: unknown) {

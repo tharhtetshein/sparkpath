@@ -228,6 +228,9 @@ export function aiApi(env: Record<string, string>) {
     const model = env.OPENAI_MODEL || "gpt-5-nano";
     const maxOutputTokens = positiveInteger(env.OPENAI_MAX_OUTPUT_TOKENS, 1800);
     const reasoningEffort = normalizeReasoningEffort(env.OPENAI_REASONING_EFFORT);
+    const researchModel = env.OPENAI_RESEARCH_MODEL || "gpt-5.5";
+    const researchMaxOutputTokens = positiveInteger(env.OPENAI_RESEARCH_MAX_OUTPUT_TOKENS, 5000);
+    const researchReasoningEffort = normalizeResearchReasoningEffort(env.OPENAI_RESEARCH_REASONING_EFFORT);
 
     if (!apiKey) {
       response.statusCode = 500;
@@ -245,12 +248,25 @@ export function aiApi(env: Record<string, string>) {
       }
 
       const responseFormat = normalizeResponseFormat(body.responseFormat);
+      const webSearch = body.webSearch === true;
       const upstream = await callOpenAiProvider(apiUrl, apiKey, {
-        model,
+        model: webSearch ? researchModel : model,
         instructions: messagesToOpenAiInstructions(messages),
         input: messagesToOpenAiInput(messages),
-        max_output_tokens: maxOutputTokens,
-        reasoning: { effort: reasoningEffort },
+        max_output_tokens: webSearch ? researchMaxOutputTokens : maxOutputTokens,
+        reasoning: { effort: webSearch ? researchReasoningEffort : reasoningEffort },
+        ...(webSearch ? {
+          tools: [{
+            type: "web_search",
+            search_context_size: "high",
+            external_web_access: true,
+            filters: {
+              blocked_domains: ["reddit.com", "quora.com", "pinterest.com", "wikipedia.org", "wikihow.com"],
+            },
+          }],
+          tool_choice: "required",
+          include: ["web_search_call.action.sources"],
+        } : {}),
         ...(responseFormat ? { text: responseFormat } : {}),
       });
 
@@ -261,7 +277,8 @@ export function aiApi(env: Record<string, string>) {
       }
 
       const content = parseOpenAiResponseContent(upstream.text);
-      json(response, { content });
+      const sources = webSearch ? parseOpenAiResponseSources(upstream.text) : [];
+      json(response, { content, sources });
     } catch (error) {
       response.statusCode = 500;
       json(response, { error: error instanceof Error ? error.message : "AI request failed." });
@@ -284,6 +301,14 @@ type OpenAiProviderPayload = {
   max_output_tokens: number;
   reasoning?: { effort: "minimal" | "low" | "medium" | "high" };
   text?: OpenAiTextFormat;
+  tools?: Array<{
+    type: "web_search";
+    search_context_size: "high";
+    external_web_access: true;
+    filters: { blocked_domains: string[] };
+  }>;
+  tool_choice?: "required";
+  include?: string[];
 };
 
 type OpenAiTextFormat = {
@@ -1314,6 +1339,45 @@ function parseOpenAiResponseContent(raw: string) {
   throw new Error(openAiEmptyContentMessage(data));
 }
 
+function parseOpenAiResponseSources(raw: string) {
+  const data = JSON.parse(raw);
+  const sources = new Map<string, { title: string; url: string }>();
+
+  function visit(value: unknown) {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    const item = value as Record<string, unknown>;
+    const url = typeof item.url === "string" ? item.url.trim() : "";
+    if (url && /^https?:\/\//i.test(url)) {
+      const fallbackTitle = sourceHostname(url);
+      const title = typeof item.title === "string" && item.title.trim()
+        ? strip(item.title).slice(0, 180)
+        : fallbackTitle;
+      const existing = sources.get(url);
+      if (!existing || (existing.title === fallbackTitle && title !== fallbackTitle)) {
+        sources.set(url, { title, url });
+      }
+    }
+    Object.values(item).forEach(visit);
+  }
+
+  visit(data.output);
+  return Array.from(sources.values()).slice(0, 16);
+}
+
+function sourceHostname(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "Web source";
+  }
+}
+
 function openAiErrorMessage(raw: string, status: number) {
   try {
     const data = JSON.parse(raw);
@@ -1332,6 +1396,10 @@ function positiveInteger(value: string | undefined, fallback: number) {
 
 function normalizeReasoningEffort(value: string | undefined): "minimal" | "low" | "medium" | "high" {
   return value === "low" || value === "medium" || value === "high" ? value : "minimal";
+}
+
+function normalizeResearchReasoningEffort(value: string | undefined): "minimal" | "low" | "medium" | "high" {
+  return value === "minimal" || value === "medium" || value === "high" ? value : "low";
 }
 
 function collectOutputText(value: unknown): string[] {

@@ -223,18 +223,21 @@ export function aiApi(env: Record<string, string>) {
       return;
     }
 
-    const apiKey = env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
-    const apiUrl = env.OPENAI_API_URL || "https://api.openai.com/v1/responses";
-    const model = env.OPENAI_MODEL || "gpt-5-nano";
-    const maxOutputTokens = positiveInteger(env.OPENAI_MAX_OUTPUT_TOKENS, 1800);
-    const reasoningEffort = normalizeReasoningEffort(env.OPENAI_REASONING_EFFORT);
-    const researchModel = env.OPENAI_RESEARCH_MODEL || "gpt-5.5";
-    const researchMaxOutputTokens = positiveInteger(env.OPENAI_RESEARCH_MAX_OUTPUT_TOKENS, 5000);
-    const researchReasoningEffort = normalizeResearchReasoningEffort(env.OPENAI_RESEARCH_REASONING_EFFORT);
+    const groqKey = env.GROQ_API_KEY || process.env.GROQ_API_KEY;
+    const useGroq = Boolean(groqKey);
+    const apiKey = groqKey || env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+    const apiUrl = useGroq ? "https://api.groq.com/openai/v1/responses" : env.OPENAI_API_URL || "https://api.openai.com/v1/responses";
+    const model = useGroq ? env.GROQ_MODEL || "openai/gpt-oss-120b" : env.OPENAI_MODEL || "gpt-5-nano";
+    const visionModel = useGroq ? env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b" : model;
+    const researchModel = useGroq ? env.GROQ_RESEARCH_MODEL || model : env.OPENAI_RESEARCH_MODEL || "gpt-5.5";
+    const maxOutputTokens = positiveInteger(useGroq ? env.GROQ_MAX_OUTPUT_TOKENS : env.OPENAI_MAX_OUTPUT_TOKENS, useGroq ? 4000 : 1800);
+    const researchMaxOutputTokens = positiveInteger(useGroq ? env.GROQ_RESEARCH_MAX_OUTPUT_TOKENS : env.OPENAI_RESEARCH_MAX_OUTPUT_TOKENS, 5000);
+    const reasoningEffort = useGroq ? normalizeGroqReasoningEffort(env.GROQ_REASONING_EFFORT) : normalizeReasoningEffort(env.OPENAI_REASONING_EFFORT);
+    const researchReasoningEffort = useGroq ? normalizeGroqReasoningEffort(env.GROQ_RESEARCH_REASONING_EFFORT) : normalizeResearchReasoningEffort(env.OPENAI_RESEARCH_REASONING_EFFORT);
 
     if (!apiKey) {
       response.statusCode = 500;
-      json(response, { error: "OPENAI_API_KEY is missing. Add it to the server environment and restart the service." });
+      json(response, { error: "GROQ_API_KEY is missing. Add it to the server environment and restart the service." });
       return;
     }
 
@@ -249,36 +252,37 @@ export function aiApi(env: Record<string, string>) {
 
       const responseFormat = normalizeResponseFormat(body.responseFormat);
       const webSearch = body.webSearch === true;
+      const hasImage = messages.some((message: any) => Array.isArray(message?.content) && message.content.some((part: any) => part?.type === "image_url"));
       const requestedMaxOutputTokens = boundedPositiveInteger(body.maxOutputTokens, 12000);
       const outputTokenBudget = requestedMaxOutputTokens ?? (webSearch ? researchMaxOutputTokens : maxOutputTokens);
       const upstream = await callOpenAiProvider(apiUrl, apiKey, {
-        model: webSearch ? researchModel : model,
+        model: hasImage ? visionModel : webSearch ? researchModel : model,
         instructions: messagesToOpenAiInstructions(messages),
         input: messagesToOpenAiInput(messages),
         max_output_tokens: outputTokenBudget,
         reasoning: { effort: webSearch ? researchReasoningEffort : reasoningEffort },
         ...(webSearch ? {
-          tools: [{
-            type: "web_search",
-            search_context_size: "high",
-            external_web_access: true,
+          tools: useGroq ? [{ type: "browser_search" as const }] : [{
+            type: "web_search" as const,
+            search_context_size: "high" as const,
+            external_web_access: true as const,
             filters: {
               blocked_domains: ["reddit.com", "quora.com", "pinterest.com", "wikipedia.org", "wikihow.com"],
             },
           }],
           tool_choice: "required",
-          include: ["web_search_call.action.sources"],
+          ...(useGroq ? {} : { include: ["web_search_call.action.sources"] }),
         } : {}),
         ...(responseFormat ? { text: responseFormat } : {}),
       });
 
       if (!upstream.ok) {
         response.statusCode = upstream.status;
-        json(response, { error: openAiErrorMessage(upstream.text, upstream.status) });
+        json(response, { error: providerErrorMessage(upstream.text, upstream.status, useGroq ? "Groq" : "OpenAI") });
         return;
       }
 
-      const content = parseOpenAiResponseContent(upstream.text);
+      const content = parseOpenAiResponseContent(upstream.text, useGroq);
       const sources = webSearch ? parseOpenAiResponseSources(upstream.text) : [];
       json(response, { content, sources });
     } catch (error) {
@@ -308,7 +312,7 @@ type OpenAiProviderPayload = {
     search_context_size: "high";
     external_web_access: true;
     filters: { blocked_domains: string[] };
-  }>;
+  } | { type: "browser_search" }>;
   tool_choice?: "required";
   include?: string[];
 };
@@ -1358,9 +1362,16 @@ function normalizeResponseFormat(value: unknown): OpenAiTextFormat | undefined {
   };
 }
 
-function parseOpenAiResponseContent(raw: string) {
+function parseOpenAiResponseContent(raw: string, useGroq = false) {
   const data = JSON.parse(raw);
   if (data?.status === "incomplete") {
+    const completeToolCall = Array.isArray(data.output) && data.output.some((item: any) => item?.type === "mcp_call" && item?.status === "completed");
+    const completedAnswer = Array.isArray(data.output) && data.output
+      .filter((item: any) => item?.type === "message" && item?.status === "completed")
+      .flatMap(collectOutputText).join("\n").trim();
+    if (useGroq && data.incomplete_details?.reason === "tool_required_not_called" && completeToolCall && completedAnswer) {
+      return completedAnswer;
+    }
     throw new Error(openAiEmptyContentMessage(data));
   }
   if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text;
@@ -1374,6 +1385,18 @@ function parseOpenAiResponseContent(raw: string) {
 function parseOpenAiResponseSources(raw: string) {
   const data = JSON.parse(raw);
   const sources = new Map<string, { title: string; url: string }>();
+
+  if (Array.isArray(data.output)) {
+    data.output.forEach((item: any) => {
+      if (item?.type !== "mcp_call" || item?.name !== "browser.open" || typeof item.output !== "string") return;
+      const lines = item.output.split(/\r?\n/).map((line: string) => line.replace(/^L\d+:\s*/, "").trim());
+      const urlIndex = lines.findIndex((line: string) => /^URL:\s*https?:\/\//i.test(line));
+      if (urlIndex < 0) return;
+      const url = lines[urlIndex].replace(/^URL:\s*/i, "").trim();
+      const title = strip(lines[urlIndex + 1] || sourceHostname(url)).slice(0, 180);
+      sources.set(url, { title, url });
+    });
+  }
 
   function visit(value: unknown) {
     if (!value) return;
@@ -1410,14 +1433,14 @@ function sourceHostname(url: string) {
   }
 }
 
-function openAiErrorMessage(raw: string, status: number) {
+function providerErrorMessage(raw: string, status: number, provider: string) {
   try {
     const data = JSON.parse(raw);
     const message = typeof data?.error?.message === "string" ? data.error.message : "";
-    return message.slice(0, 420) || `OpenAI API returned ${status}.`;
+    return message.slice(0, 420) || `${provider} API returned ${status}.`;
   } catch {
     const cleaned = strip(raw);
-    return cleaned.slice(0, 420) || `OpenAI API returned ${status}.`;
+    return cleaned.slice(0, 420) || `${provider} API returned ${status}.`;
   }
 }
 
@@ -1434,6 +1457,10 @@ function boundedPositiveInteger(value: unknown, max: number) {
 
 function normalizeReasoningEffort(value: string | undefined): "minimal" | "low" | "medium" | "high" {
   return value === "low" || value === "medium" || value === "high" ? value : "minimal";
+}
+
+function normalizeGroqReasoningEffort(value: string | undefined): "low" | "medium" | "high" {
+  return value === "medium" || value === "high" ? value : "low";
 }
 
 function normalizeResearchReasoningEffort(value: string | undefined): "minimal" | "low" | "medium" | "high" {
@@ -1463,10 +1490,10 @@ function openAiEmptyContentMessage(data: any) {
     ? data.output.map((item: any) => item?.type).filter(Boolean).join(", ")
     : "";
   const hint = reason === "max_output_tokens"
-    ? " Increase OPENAI_MAX_OUTPUT_TOKENS or keep OPENAI_REASONING_EFFORT=minimal."
+    ? " Increase the provider's output-token limit or reduce the requested response length."
     : "";
   return [
-    `OpenAI returned no generated text. Status: ${status}.`,
+    `AI provider returned no generated text. Status: ${status}.`,
     reason ? `Reason: ${reason}.` : "",
     outputTypes ? `Output item types: ${outputTypes}.` : "",
     hint,

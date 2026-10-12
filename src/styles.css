@@ -1851,6 +1851,65 @@ pre {
   text-align: center;
 }
 
+.book-import {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 26px 30px;
+  border: 1px solid var(--ink);
+  background: #e7eee8;
+}
+
+.book-import h2 {
+  margin: 6px 0 8px;
+  font-family: "Fraunces", serif;
+  font-size: clamp(1.5rem, 2.4vw, 2.2rem);
+}
+
+.book-import p:last-child { max-width: 660px; color: var(--muted); line-height: 1.55; }
+.book-upload-button {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 18px;
+  border: 1px solid var(--ink);
+  background: var(--course-navy);
+  color: var(--course-cream);
+  cursor: pointer;
+  font-weight: 800;
+}
+.book-upload-button input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.course-outline section button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.book-teacher, .book-exam {
+  padding: 26px;
+  border: 1px solid var(--ink);
+  background: #fffaf0;
+}
+.book-teacher > p, .book-exam > p { color: var(--muted); line-height: 1.6; }
+.book-teacher form, .book-exam form { display: grid; gap: 14px; margin-top: 20px; }
+.book-teacher form label, .book-exam form label { display: grid; gap: 8px; font-weight: 750; }
+.book-teacher textarea, .book-exam textarea {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.5;
+  resize: vertical;
+}
+.book-teacher button, .book-exam button { justify-self: start; }
+.book-discussion { margin-top: 16px; padding: 16px; border-left: 4px solid var(--green); background: #edf5ed; }
+.book-discussion p { white-space: pre-wrap; }
+.book-exam-result { margin-top: 20px; padding: 16px; border: 1px solid var(--course-coral); background: #f8ebe3; }
+.book-exam-result.passed { border-color: var(--green); background: #edf5ed; }
+.book-exam-result p { margin-top: 7px; }
+.book-text-warning { margin-top: 18px; padding: 12px 16px; border-left: 4px solid var(--course-coral); background: #f8ebe3; line-height: 1.5; }
+
 .course-empty p {
   max-width: 570px;
   line-height: 1.6;
@@ -2637,6 +2696,8 @@ pre {
 }
 
 @media (max-width: 720px) {
+  .book-import { flex-direction: column; align-items: stretch; padding: 20px; }
+  .book-upload-button { justify-content: center; }
   .app-frame {
     padding: 10px;
   }

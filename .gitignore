@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .playwright-mcp/
+.playwright-cli/
 notes/
 *.log
 .ai-rate-limit.json

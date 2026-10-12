@@ -1,0 +1,63 @@
+import * as pdfjs from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import { BookSection } from "./bookSections";
+
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const DB_NAME = "sparkpath-books-v1";
+const STORE_NAME = "sections";
+
+export async function extractBookPages(file: File): Promise<string[]> {
+  if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+    throw new Error("Choose a PDF book.");
+  }
+  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages: string[] = [];
+  for (let number = 1; number <= pdf.numPages; number += 1) {
+    const page = await pdf.getPage(number);
+    const content = await page.getTextContent();
+    pages.push(content.items.map((item) => "str" in item ? item.str : "").join(" ").replace(/\s+/g, " ").trim());
+  }
+  if (pages.join("").length < 200) {
+    throw new Error("This PDF has too little selectable text. Please use a text-based or OCR-processed PDF.");
+  }
+  return pages;
+}
+
+function openBookDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Book storage is unavailable."));
+  });
+}
+
+export async function saveBookSections(sections: BookSection[]): Promise<void> {
+  const db = await openBookDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, "readwrite");
+      const store = transaction.objectStore(STORE_NAME);
+      sections.forEach((section) => store.put(section, section.id));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error("Could not save the book."));
+      transaction.onabort = () => reject(transaction.error ?? new Error("Could not save the book."));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadBookSection(id: string): Promise<BookSection> {
+  const db = await openBookDb();
+  try {
+    return await new Promise<BookSection>((resolve, reject) => {
+      const request = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(id);
+      request.onsuccess = () => request.result ? resolve(request.result as BookSection) : reject(new Error("Book text is missing from this browser. Reimport the PDF to continue."));
+      request.onerror = () => reject(request.error ?? new Error("Could not load the book section."));
+    });
+  } finally {
+    db.close();
+  }
+}

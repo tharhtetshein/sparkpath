@@ -7,11 +7,6 @@ export type BookSection = {
 
 export const MAX_SECTION_CHARS = 4500;
 
-export function isBookLessonLocked(lessons: Array<{ id: string; completedAt?: string }>, lessonId: string): boolean {
-  const index = lessons.findIndex((lesson) => lesson.id === lessonId);
-  return index < 0 || lessons.slice(0, index).some((lesson) => !lesson.completedAt);
-}
-
 export function splitBookIntoSections(pages: string[]): BookSection[] {
   const sections: BookSection[] = [];
   let text = "";

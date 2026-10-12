@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowRight, BookOpen, Check, ChevronLeft, ChevronRight, RotateCcw, Sparkles } from "lucide-react";
 import type { BookStudio } from "./lib/bookStudio";
 
-export function BookStudyLab({ studio, pageStart, pageEnd }: { studio: BookStudio; pageStart: number; pageEnd: number }) {
+export function BookStudyLab({ studio, pageStart, pageEnd, onRetry, retryBusy = false }: { studio: BookStudio; pageStart: number; pageEnd: number; onRetry?: () => void; retryBusy?: boolean }) {
   const [activeConcept, setActiveConcept] = useState(0);
   const [activeStep, setActiveStep] = useState(0);
   const [selectedChoice, setSelectedChoice] = useState<number | null>(null);
@@ -33,7 +33,11 @@ export function BookStudyLab({ studio, pageStart, pageEnd }: { studio: BookStudi
       {!hasActivity && (
         <div className="book-studio-sparse">
           <BookOpen size={26} />
-          <div><strong>This section is mainly front matter or a short transition.</strong><p>Read the notes below, or move on to the next section.</p></div>
+          <div>
+            <strong>{studio.emptyReason === "source_check" ? "This activity could not be verified against the PDF." : "This section is mainly front matter or a short transition."}</strong>
+            <p>{studio.emptyReason === "source_check" ? "The full lesson is below. You can try building the study tools again." : "Read the notes below, or move on to the next section."}</p>
+            {studio.emptyReason === "source_check" && onRetry && <button type="button" disabled={retryBusy} onClick={onRetry}>{retryBusy ? "Checking again..." : "Try again"}</button>}
+          </div>
         </div>
       )}
 

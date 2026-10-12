@@ -4,6 +4,7 @@ export type BookStudio = {
   steps: Array<{ title: string; action: string; outcome: string }>;
   check: Array<{ question: string; choices: string[]; correctIndex: number; explanation: string; sourcePhrase: string }>;
   generatedAt: string;
+  emptyReason?: "front_matter" | "source_check";
 };
 
 const text = { type: "string" };
@@ -52,6 +53,20 @@ export const bookStudioResponseFormat = {
   },
 };
 
+export const bookStudioAuditResponseFormat = {
+  name: "book_studio_source_audit",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["conceptSupported", "stepSupported", "checkSupported"],
+    properties: {
+      conceptSupported: { type: "array", items: { type: "boolean" } },
+      stepSupported: { type: "array", items: { type: "boolean" } },
+      checkSupported: { type: "array", items: { type: "boolean" } },
+    },
+  },
+};
+
 function compact(value: unknown, maxLength: number): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, maxLength) : "";
 }
@@ -69,6 +84,19 @@ function clueSupportsAnswer(answer: string, phrase: string): boolean {
   return overlaps >= Math.min(2, keywords.length) && keywords.length > 0;
 }
 
+function contradictsSource(claim: string, phrase: string): boolean {
+  const claimWords = normalized(claim);
+  const sourceWords = normalized(phrase);
+  const opposites: Array<[RegExp, RegExp]> = [
+    [/\bincreas\w*\b/, /\bdecreas\w*\b/],
+    [/\bimprov\w*\b/, /\bworsen\w*\b/],
+    [/\bhigher\b/, /\blower\b/],
+    [/\bcan\b/, /\bcannot\b/],
+  ];
+  return opposites.some(([positive, negative]) =>
+    (positive.test(claimWords) && negative.test(sourceWords)) || (negative.test(claimWords) && positive.test(sourceWords)));
+}
+
 export function parseBookStudio(content: string, sourceText: string): BookStudio {
   const parsed = JSON.parse(content);
   const source = normalized(sourceText);
@@ -80,7 +108,7 @@ export function parseBookStudio(content: string, sourceText: string): BookStudio
       explanation: compact(item?.explanation, 360),
       sourcePhrase: compact(item?.sourcePhrase, 160),
     }))
-    .filter((item: BookStudio["concepts"][number]) => item.label && item.explanation && anchored(item.sourcePhrase))
+    .filter((item: BookStudio["concepts"][number]) => item.label && item.explanation && anchored(item.sourcePhrase) && !contradictsSource(item.explanation, item.sourcePhrase))
     .slice(0, 5);
   const steps = (Array.isArray(parsed.steps) ? parsed.steps : [])
     .map((item: any) => ({
@@ -90,7 +118,7 @@ export function parseBookStudio(content: string, sourceText: string): BookStudio
     }))
     .filter((item: BookStudio["steps"][number]) => item.title && item.action && item.outcome)
     .slice(0, 5);
-  let check = (Array.isArray(parsed.check) ? parsed.check : [])
+  const check = (Array.isArray(parsed.check) ? parsed.check : [])
     .map((item: any) => ({
       question: compact(item?.question, 280),
       choices: Array.isArray(item?.choices) ? item.choices.map((choice: unknown) => compact(choice, 160)) : [],
@@ -98,12 +126,32 @@ export function parseBookStudio(content: string, sourceText: string): BookStudio
       explanation: compact(item?.explanation, 420),
       sourcePhrase: compact(item?.sourcePhrase, 160),
     }))
-    .filter((item: BookStudio["check"][number]) => item.question && item.explanation && item.choices.length === 3 && item.choices.every(Boolean) && Number.isInteger(item.correctIndex) && item.correctIndex >= 0 && item.correctIndex < 3 && anchored(item.sourcePhrase) && clueSupportsAnswer(item.choices[item.correctIndex], item.sourcePhrase))
+    .filter((item: BookStudio["check"][number]) => item.question && item.explanation && item.choices.length === 3 && item.choices.every(Boolean) && Number.isInteger(item.correctIndex) && item.correctIndex >= 0 && item.correctIndex < 3 && anchored(item.sourcePhrase) && clueSupportsAnswer(item.choices[item.correctIndex], item.sourcePhrase) && !contradictsSource(`${item.choices[item.correctIndex]} ${item.explanation}`, item.sourcePhrase))
     .slice(0, 1);
+  return {
+    diagramTitle,
+    concepts,
+    steps,
+    check,
+    generatedAt: new Date().toISOString(),
+    ...(!concepts.length && !steps.length && !check.length ? {
+      emptyReason: (parsed.concepts?.length || parsed.steps?.length || parsed.check?.length ? "source_check" : "front_matter") as BookStudio["emptyReason"],
+    } : {}),
+  };
+}
+
+export function applyBookStudioAudit(studio: BookStudio, response: string): BookStudio {
+  const audit = JSON.parse(response);
+  if (!Array.isArray(audit.conceptSupported) || !Array.isArray(audit.stepSupported) || !Array.isArray(audit.checkSupported)) {
+    throw new Error("AI did not return a complete source audit. Try building the study tools again.");
+  }
+  const concepts = studio.concepts.filter((_, index) => audit.conceptSupported[index] === true);
+  const steps = studio.steps.filter((_, index) => audit.stepSupported[index] === true);
+  let check = studio.check.filter((_, index) => audit.checkSupported[index] === true);
   if (!check.length && concepts.length >= 2) {
     const [focus, alternative] = concepts;
     const choices = [alternative.explanation, `The PDF does not discuss ${focus.label}.`];
-    const correctIndex = diagramTitle.length % 3;
+    const correctIndex = studio.diagramTitle.length % 3;
     choices.splice(correctIndex, 0, focus.explanation);
     check = [{
       question: `Which statement best explains ${focus.label}?`,
@@ -114,10 +162,10 @@ export function parseBookStudio(content: string, sourceText: string): BookStudio
     }];
   }
   return {
-    diagramTitle,
+    ...studio,
     concepts,
     steps,
     check,
-    generatedAt: new Date().toISOString(),
+    emptyReason: concepts.length || steps.length || check.length ? undefined : "source_check",
   };
 }

@@ -198,6 +198,8 @@ The project requires Node.js `22.12.0` or newer.
 
 ### The site loads but AI actions fail
 
+If an error mentions OpenAI billing, the running service is still using an older build. Deploy the latest commit, then set `GROQ_API_KEY` in the existing Render service; updating `render.yaml` does not fill in a secret for an already-created service.
+
 In Render:
 
 1. Open the SparkPath service.

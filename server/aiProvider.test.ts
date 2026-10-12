@@ -46,6 +46,15 @@ test("uses Groq GPT OSS 120B for ordinary and structured lesson requests", async
   assert.equal(result.upstreamRequests[0].payload.text.format.type, "json_schema");
 });
 
+test("does not fall back to OpenAI when Render lacks GROQ_API_KEY", async () => {
+  const result = await callAi({ OPENAI_API_KEY: "old-openai-key" }, {
+    messages: [{ role: "user", content: "Prepare a book section" }],
+  });
+  assert.equal(result.status, 503);
+  assert.match(result.body.error, /GROQ_API_KEY/);
+  assert.equal(result.upstreamRequests.length, 0);
+});
+
 test("uses Groq browser search for researched course requests", async () => {
   const result = await callAi({ GROQ_API_KEY: "test-key" }, {
     messages: [{ role: "user", content: "Research this topic" }], webSearch: true,

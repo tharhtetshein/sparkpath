@@ -49,8 +49,9 @@ import {
 } from "./lib/agent";
 import { buildApplicationDocx } from "./lib/applicationDoc";
 import { BookStudyLab } from "./BookStudyLab";
+import { BookSourcePages } from "./BookSourcePages";
 import { importGithubRepo, inspectGithubRepoProgress, parseFiles, RepoProgressSnapshot } from "./lib/ingest";
-import { extractBookPages, loadBookSection, saveBookSections } from "./lib/book";
+import { extractBookPages, loadBookSection, saveBookPdf, saveBookSections } from "./lib/book";
 import { bookResumeLessonId, splitBookIntoSections } from "./lib/bookSections";
 import { applyBookStudioAudit, bookStudioAuditResponseFormat, bookStudioResponseFormat, parseBookStudio, type BookStudio } from "./lib/bookStudio";
 import { findTaxonomyNode, skillTaxonomyGroups, taxonomyPromptList } from "./lib/skillTaxonomy";
@@ -306,6 +307,7 @@ type GeneratedCourse = {
   depth: CourseDepth;
   kind?: "book";
   bookFilename?: string;
+  sourcePdfStored?: boolean;
   unreadablePages?: number[];
   imagePages?: number[];
   lastOpenedLessonId?: string;
@@ -1133,8 +1135,15 @@ export function App() {
       const unreadablePages = pages.flatMap((page, index) => page ? [] : [index + 1]);
       const sections = splitBookIntoSections(pages);
       if (!sections.length) throw new Error("No readable book sections were found.");
-      await saveBookSections(sections);
       const courseId = crypto.randomUUID();
+      await saveBookSections(sections);
+      let sourcePdfStored = false;
+      try {
+        await saveBookPdf(courseId, file);
+        sourcePdfStored = true;
+      } catch {
+        // Keep the text course usable if browser storage cannot hold the original PDF.
+      }
       const title = file.name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim();
       const lessons: CourseLesson[] = sections.map((section, index) => ({
         id: `${courseId}-book-${index + 1}`,
@@ -1161,6 +1170,7 @@ export function App() {
         id: courseId,
         kind: "book",
         bookFilename: file.name,
+        sourcePdfStored,
         unreadablePages,
         imagePages: extracted.imagePages,
         lastOpenedLessonId: lessons[0].id,
@@ -2825,6 +2835,9 @@ function CoursesPage(props: {
               {activeCourse.kind === "book" && !!activeCourse.unreadablePages?.length && (
                 <p className="book-text-warning">{activeCourse.unreadablePages.length} PDF page{activeCourse.unreadablePages.length === 1 ? "" : "s"} had no selectable text ({activeCourse.unreadablePages.slice(0, 12).join(", ")}{activeCourse.unreadablePages.length > 12 ? ", …" : ""}). If those pages contain content, import an OCR-processed PDF for complete coverage.</p>
               )}
+              {activeCourse.kind === "book" && !activeCourse.sourcePdfStored && (
+                <p className="book-text-warning">Original PDF pages are unavailable for this saved book. Reimport its PDF to show the page images inside each section.</p>
+              )}
 
               {lessonBusy === activeLesson.id || bookLessonBusy[activeLesson.id] ? (
                 <div className="lesson-loading">
@@ -2856,6 +2869,9 @@ function CoursesPage(props: {
                         Open on YouTube <ExternalLink size={14} />
                       </a>
                     </aside>
+                  )}
+                  {activeCourse.kind === "book" && activeCourse.sourcePdfStored && (
+                    <BookSourcePages key={`${activeCourse.id}-${activeLesson.id}`} bookId={activeCourse.id} pageStart={activeLesson.pageStart ?? 1} pageEnd={activeLesson.pageEnd ?? 1} />
                   )}
                   {activeCourse.kind === "book" && (
                     activeLesson.studio ? <BookStudyLab key={activeLesson.id} studio={activeLesson.studio} pageStart={activeLesson.pageStart ?? 1} pageEnd={activeLesson.pageEnd ?? 1} retryBusy={!!studioBusy[activeLesson.id]} onRetry={() => onPrepareStudio(activeCourse.id, activeLesson.id)} /> : (

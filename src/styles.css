@@ -2261,6 +2261,26 @@ pre {
   line-height: 1.75;
 }
 
+.book-source-pages {
+  margin: 24px 0 32px;
+  padding: 19px;
+  border: 1px solid #d7c8ad;
+  background: #f5eddd;
+}
+.book-source-pages > header,
+.book-source-pages > header > div { display: flex; align-items: center; gap: 11px; }
+.book-source-pages > header { justify-content: space-between; margin-bottom: 17px; }
+.book-source-pages > header > div > svg { color: var(--course-coral); }
+.book-source-pages .eyebrow { margin: 0; font-size: .64rem; }
+.book-source-pages h3 { margin: 2px 0 0; font-family: "Fraunces", serif; font-size: 1.45rem; }
+.book-source-loading { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: .78rem; }
+.book-source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 15px; align-items: start; }
+.book-source-grid figure { margin: 0; overflow: hidden; border: 1px solid #d6c7ad; background: #fffdf8; box-shadow: 3px 4px 0 rgba(35, 43, 35, .08); }
+.book-source-grid a { display: block; padding: 8px; }
+.book-source-grid img { display: block; width: 100%; height: auto; background: white; }
+.book-source-grid figcaption { padding: 8px 11px; border-top: 1px solid #e5dac7; color: var(--muted); font-size: .74rem; font-weight: 800; }
+.book-source-error { margin: 0; color: #714432; font-size: .85rem; line-height: 1.55; }
+
 .lesson-video {
   display: grid;
   grid-template-columns: minmax(180px, 0.42fr) minmax(0, 1fr);

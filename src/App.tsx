@@ -285,6 +285,7 @@ type CourseLesson = {
   assessment?: { answers: string[]; score: number; feedback: string; passed: boolean; reviewedAt: string };
   discussion?: Array<{ question: string; answer: string }>;
   studio?: BookStudio;
+  studiedAt?: string;
   completedAt?: string;
 };
 
@@ -1281,18 +1282,35 @@ export function App() {
     }));
   }
 
-  async function openCourseLesson(courseId: string, lessonId: string) {
+  async function openCourseLesson(courseId: string, lessonId: string, markCurrentAsRead = false) {
     const course = courseState.courses.find((item) => item.id === courseId);
     const lesson = course?.modules.flatMap((module) => module.lessons).find((item) => item.id === lessonId);
     if (!course || !lesson) return;
 
     if (course.kind === "book") {
+      const previousLesson = course.modules.flatMap((module) => module.lessons).find((item) => item.id === courseState.activeLessonId);
+      const shouldMarkPrevious = Boolean(markCurrentAsRead && courseState.activeCourseId === courseId && previousLesson && previousLesson.id !== lessonId && previousLesson.content?.researchedAt);
+      const openedAt = shouldMarkPrevious ? new Date().toISOString() : undefined;
       setCourseState((current) => ({
         ...current,
         activeCourseId: courseId,
         activeLessonId: lessonId,
-        courses: current.courses.map((item) => item.id === courseId ? { ...item, lastOpenedLessonId: lessonId } : item),
+        courses: current.courses.map((item) => item.id === courseId ? {
+          ...item,
+          lastOpenedLessonId: lessonId,
+          modules: item.modules.map((module) => ({
+            ...module,
+            lessons: module.lessons.map((candidate) => candidate.id === current.activeLessonId
+              && current.activeCourseId === courseId
+              && candidate.id !== lessonId
+              && openedAt
+              && candidate.content?.researchedAt
+              ? { ...candidate, studiedAt: candidate.studiedAt ?? openedAt }
+              : candidate),
+          })),
+        } : item),
       }));
+      if (shouldMarkPrevious) setStatus(`Marked the previous section read. Opening ${lesson.title}.`);
       await prepareBookLesson(course, lesson);
       return;
     }
@@ -1409,7 +1427,11 @@ export function App() {
       ...course,
       modules: course.modules.map((module) => ({
         ...module,
-        lessons: module.lessons.map((item) => item.id === lessonId ? { ...item, completedAt } : item),
+        lessons: module.lessons.map((item) => item.id === lessonId ? {
+          ...item,
+          completedAt,
+          ...(course.kind === "book" && completedAt ? { studiedAt: item.studiedAt ?? completedAt } : {}),
+        } : item),
       })),
     };
     setCourseState((current) => ({
@@ -1421,6 +1443,21 @@ export function App() {
     setStatus(completedAt
       ? `Lesson completed. ${progress.percent}% of ${updatedCourse.title} is now finished.`
       : `Lesson reopened. ${progress.percent}% of the course remains complete.`);
+  }
+
+  function markBookSectionRead(courseId: string, lessonId: string) {
+    const studiedAt = new Date().toISOString();
+    setCourseState((current) => ({
+      ...current,
+      courses: current.courses.map((course) => course.id === courseId && course.kind === "book" ? {
+        ...course,
+        modules: course.modules.map((module) => ({
+          ...module,
+          lessons: module.lessons.map((lesson) => lesson.id === lessonId ? { ...lesson, studiedAt: lesson.studiedAt ?? studiedAt } : lesson),
+        })),
+      } : course),
+    }));
+    setStatus("Section marked as read.");
   }
 
   async function askBookQuestion(courseId: string, lessonId: string, question: string) {
@@ -1925,6 +1962,7 @@ export function App() {
               onPrepareStudio={prepareBookStudio}
               onSelectCourse={selectCourse}
               onOpenLesson={openCourseLesson}
+              onMarkBookSectionRead={markBookSectionRead}
               onToggleComplete={toggleLessonComplete}
               onSaveExerciseSubmission={saveLessonExerciseSubmission}
               onReviewExerciseSubmission={reviewLessonExerciseSubmission}
@@ -2494,7 +2532,8 @@ function CoursesPage(props: {
   onSubmitBookAssessment: (courseId: string, lessonId: string, answers: string[]) => Promise<void>;
   onPrepareStudio: (courseId: string, lessonId: string) => Promise<void>;
   onSelectCourse: (courseId: string) => void;
-  onOpenLesson: (courseId: string, lessonId: string) => void;
+  onOpenLesson: (courseId: string, lessonId: string, markCurrentAsRead?: boolean) => void;
+  onMarkBookSectionRead: (courseId: string, lessonId: string) => void;
   onToggleComplete: (courseId: string, lessonId: string) => void;
   onSaveExerciseSubmission: (courseId: string, lessonId: string, text: string, imageFile?: File | null) => Promise<void>;
   onReviewExerciseSubmission: (courseId: string, lessonId: string) => Promise<void>;
@@ -2524,6 +2563,7 @@ function CoursesPage(props: {
     onPrepareStudio,
     onSelectCourse,
     onOpenLesson,
+    onMarkBookSectionRead,
     onToggleComplete,
     onSaveExerciseSubmission,
     onReviewExerciseSubmission,
@@ -2645,7 +2685,7 @@ function CoursesPage(props: {
           {courses.length ? (
             <div className="course-card-grid">
               {courses.map((course, index) => {
-                const progress = courseProgress(course);
+                const progress = course.kind === "book" ? bookReadingProgress(course) : courseProgress(course);
                 return (
                   <button type="button" className="course-card" key={course.id} onClick={() => onSelectCourse(course.id)}>
                     <span className="course-card-index">{String(index + 1).padStart(2, "0")}</span>
@@ -2656,7 +2696,7 @@ function CoursesPage(props: {
                       <i style={{ width: `${progress.percent}%` }} />
                     </div>
                     <footer>
-                      <span>{progress.completed}/{progress.total} lessons</span>
+                      <span>{progress.completed}/{progress.total} {course.kind === "book" ? "sections read" : "lessons"}</span>
                       <strong>{progress.percent}% <ChevronRight size={16} /></strong>
                     </footer>
                   </button>
@@ -2674,7 +2714,7 @@ function CoursesPage(props: {
     );
   }
 
-  const progress = courseProgress(activeCourse);
+  const progress = activeCourse.kind === "book" ? bookReadingProgress(activeCourse) : courseProgress(activeCourse);
   const allLessons = activeCourse.modules.flatMap((module) => module.lessons);
   const activeIndex = Math.max(0, allLessons.findIndex((lesson) => lesson.id === activeLesson?.id));
   const previousLesson = activeIndex > 0 ? allLessons[activeIndex - 1] : undefined;
@@ -2697,7 +2737,7 @@ function CoursesPage(props: {
         </div>
         <div className="course-total-progress">
           <strong>{progress.percent}%</strong>
-          <span>complete</span>
+          <span>{activeCourse.kind === "book" ? "sections read" : "complete"}</span>
           <i><b style={{ width: `${progress.percent}%` }} /></i>
         </div>
       </header>
@@ -2706,14 +2746,14 @@ function CoursesPage(props: {
         <aside className="course-outline">
           <div className="course-outline-title"><ListTree size={18} /><strong>Course outline</strong></div>
           {activeCourse.modules.map((module, moduleIndex) => {
-            const moduleCompleted = module.lessons.filter((lesson) => lesson.completedAt).length;
+            const moduleCompleted = module.lessons.filter((lesson) => activeCourse.kind === "book" ? lesson.studiedAt || lesson.completedAt : lesson.completedAt).length;
             return (
               <section key={module.id}>
                 <header>
                   <span>{String(moduleIndex + 1).padStart(2, "0")}</span>
                   <div>
                     <h3>{module.title}</h3>
-                    <small>{moduleCompleted}/{module.lessons.length} complete</small>
+                  <small>{moduleCompleted}/{module.lessons.length} {activeCourse.kind === "book" ? "read" : "complete"}</small>
                   </div>
                 </header>
                 <div>
@@ -2724,7 +2764,9 @@ function CoursesPage(props: {
                       className={lesson.id === activeLesson?.id ? "active" : ""}
                       onClick={() => onOpenLesson(activeCourse.id, lesson.id)}
                     >
-                      {lesson.completedAt ? <CheckCircle2 size={17} /> : lesson.id === activeLesson?.id ? <PlayCircle size={17} /> : <Circle size={17} />}
+                      {lesson.completedAt || lesson.studiedAt
+                        ? <CheckCircle2 className={activeCourse.kind === "book" ? "book-read-check" : ""} size={17} />
+                        : lesson.id === activeLesson?.id ? <PlayCircle size={17} /> : <Circle size={17} />}
                       <span>{lesson.title}</span>
                     </button>
                   ))}
@@ -2742,7 +2784,14 @@ function CoursesPage(props: {
                   <p className="eyebrow">{activeModule?.title}</p>
                   <span>{activeCourse.kind === "book" ? "Section" : "Lesson"} {activeIndex + 1} of {allLessons.length} · {activeLesson.estimatedMinutes} min{activeCourse.kind === "book" ? ` · PDF pages ${activeLesson.pageStart}–${activeLesson.pageEnd}` : ""}</span>
                 </div>
-                {activeCourse.kind === "book" && nextLesson && <button type="button" className="book-next-shortcut" onClick={() => onOpenLesson(activeCourse.id, nextLesson.id)}>Next section <ChevronRight size={16} /></button>}
+                {activeCourse.kind === "book" && (
+                  <div className="book-reader-actions">
+                    <button type="button" className="book-mark-read" aria-pressed={!!(activeLesson.studiedAt || activeLesson.completedAt)} disabled={!!(activeLesson.studiedAt || activeLesson.completedAt)} onClick={() => onMarkBookSectionRead(activeCourse.id, activeLesson.id)}>
+                      <CheckCircle2 size={16} />{activeLesson.studiedAt || activeLesson.completedAt ? "Read" : "Mark as read"}
+                    </button>
+                    {nextLesson && <button type="button" className="book-next-shortcut" onClick={() => onOpenLesson(activeCourse.id, nextLesson.id, true)}>Next section <ChevronRight size={16} /></button>}
+                  </div>
+                )}
               </div>
               <h2>{activeLesson.title}</h2>
               <p className="lesson-summary">{activeCourse.kind === "book" ? `Explore the ideas from PDF pages ${activeLesson.pageStart}–${activeLesson.pageEnd}, then study the full explanation or continue at your own pace.` : activeLesson.summary}</p>
@@ -3029,7 +3078,7 @@ function CoursesPage(props: {
                   {activeLesson.completedAt ? <Check size={18} /> : <Circle size={18} />}
                   {activeLesson.completedAt ? "Completed" : activeMastery?.canComplete ? "Mark complete" : activeCourse.kind === "book" ? "Assessment pending" : "Mastery required"}
                 </button>
-                <button type="button" disabled={!nextLesson} onClick={() => nextLesson && onOpenLesson(activeCourse.id, nextLesson.id)}>
+                <button type="button" disabled={!nextLesson} onClick={() => nextLesson && onOpenLesson(activeCourse.id, nextLesson.id, activeCourse.kind === "book")}>
                   {activeCourse.kind === "book" ? "Next section" : "Next lesson"}<ChevronRight size={17} />
                 </button>
               </footer>
@@ -4131,6 +4180,16 @@ function courseLessonCount(course: GeneratedCourse) {
 function courseProgress(course: GeneratedCourse) {
   const lessons = course.modules.flatMap((module) => module.lessons);
   const completed = lessons.filter((lesson) => lesson.completedAt).length;
+  return {
+    completed,
+    total: lessons.length,
+    percent: lessons.length ? Math.round((completed / lessons.length) * 100) : 0,
+  };
+}
+
+function bookReadingProgress(course: GeneratedCourse) {
+  const lessons = course.modules.flatMap((module) => module.lessons);
+  const completed = lessons.filter((lesson) => lesson.studiedAt || lesson.completedAt).length;
   return {
     completed,
     total: lessons.length,

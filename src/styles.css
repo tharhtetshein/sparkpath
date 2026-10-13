@@ -1988,6 +1988,9 @@ pre {
 .book-full-lesson-heading button { display: inline-flex; align-items: center; gap: 7px; margin-top: 14px; padding: 7px 0; border: 0; background: transparent; color: var(--course-coral); font-weight: 850; }
 .book-next-shortcut { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 7px 0; border: 0; background: transparent; color: var(--course-coral); font-size: .78rem; font-weight: 850; }
 .book-next-shortcut:hover { text-decoration: underline; }
+.book-reader-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; }
+.book-mark-read { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--green); background: #edf5ed; color: var(--green); font-size: .78rem; font-weight: 850; }
+.book-mark-read:disabled { cursor: default; opacity: .86; }
 .book-mode .book-lecture-section { display: grid; grid-template-columns: 44px minmax(180px, .65fr) minmax(0, 1.35fr); gap: 14px; align-items: start; padding: 28px 0; border-bottom: 1px solid var(--line); }
 .book-mode .book-lecture-section h3 { margin: 0; font-size: clamp(1.45rem, 2vw, 1.9rem); }
 .book-mode .book-lecture-section p { grid-column: 3; margin: 0; }
@@ -2145,6 +2148,8 @@ pre {
   color: var(--ink);
   box-shadow: inset 5px 0 0 var(--course-coral);
 }
+
+.course-outline section button svg.book-read-check { color: var(--green); }
 
 .course-outline section button svg {
   flex: 0 0 auto;
@@ -2873,6 +2878,8 @@ pre {
   .lesson-meta {
     flex-direction: column;
   }
+
+  .book-reader-actions { width: 100%; justify-content: space-between; }
 
   .lesson-navigation {
     grid-template-columns: 1fr;

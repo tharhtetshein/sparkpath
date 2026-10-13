@@ -2067,19 +2067,32 @@ pre {
 .course-reader-layout {
   display: grid;
   grid-template-columns: minmax(270px, 330px) minmax(0, 1fr);
+  align-items: start;
   min-height: calc(100vh - 200px);
 }
 
 .course-outline {
+  position: sticky;
+  top: 14px;
+  align-self: start;
+  height: calc(100vh - 28px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  z-index: 2;
   border-right: 1px solid var(--ink);
   background: #f4ecdc;
 }
 
 .course-outline-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 9px;
   padding: 18px 20px;
+  background: #f4ecdc;
   border-bottom: 1px solid var(--line);
 }
 
@@ -2836,8 +2849,11 @@ pre {
   }
 
   .course-outline {
+    position: static;
+    height: clamp(220px, 42vh, 430px);
     max-height: 430px;
-    overflow: auto;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
     border-right: 0;
     border-bottom: 1px solid var(--ink);
   }

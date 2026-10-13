@@ -55,7 +55,7 @@ test("builds a grounded quick check from two concepts when AI omits one", () => 
     steps: [],
     check: [],
   }), source);
-  const studio = applyBookStudioAudit(draft, JSON.stringify({ conceptSupported: [true, true], stepSupported: [], checkSupported: [] }));
+  const studio = applyBookStudioAudit(draft, JSON.stringify({ conceptSupported: [true, true], stepSupported: [], checkSupported: [], pageCoverage: [] }));
   assert.equal(studio.check.length, 1);
   assert.equal(studio.check[0].choices[studio.check[0].correctIndex], "Practice used to improve a task.");
   assert.equal(studio.check[0].sourcePhrase, "Experience improves performance on a task");
@@ -101,7 +101,7 @@ test("independent audit removes unsupported concepts, steps, and checks", () => 
     steps: [{ title: "Select", action: "Pick a value", outcome: "The smallest value wins." }],
     check: [{ question: "What does feedback reveal?", choices: ["Feedback reveals errors", "Nothing", "It depends"], correctIndex: 0, explanation: "It reveals errors.", sourcePhrase: "Feedback reveals errors" }],
   }), source);
-  const studio = applyBookStudioAudit(draft, JSON.stringify({ conceptSupported: [false, true], stepSupported: [false], checkSupported: [false] }));
+  const studio = applyBookStudioAudit(draft, JSON.stringify({ conceptSupported: [false, true], stepSupported: [false], checkSupported: [false], pageCoverage: [] }));
   assert.deepEqual(studio.concepts.map((concept) => concept.label), ["Feedback"]);
   assert.deepEqual(studio.steps, []);
   assert.deepEqual(studio.check, []);
@@ -115,7 +115,24 @@ test("marks an unverified visual activity for retry", () => {
     steps: [],
     check: [],
   }), source);
-  const studio = applyBookStudioAudit(draft, JSON.stringify({ conceptSupported: [false], stepSupported: [], checkSupported: [] }));
+  const studio = applyBookStudioAudit(draft, JSON.stringify({ conceptSupported: [false], stepSupported: [], checkSupported: [], pageCoverage: [] }));
   assert.deepEqual(studio.concepts, []);
   assert.equal(studio.emptyReason, "source_check");
+});
+
+test("coverage audit reports omitted and unreadable PDF pages", () => {
+  const source = "[PDF page 31] The first page explains the model. [PDF page 32] The next page shows a decision boundary.";
+  const draft = parseBookStudio(JSON.stringify({ diagramTitle: "Decision boundary", concepts: [], steps: [], check: [] }), source);
+  const studio = applyBookStudioAudit(draft, JSON.stringify({
+    conceptSupported: [],
+    stepSupported: [],
+    checkSupported: [],
+    pageCoverage: [{ page: 31, complete: true, missing: [] }],
+  }), { unreadablePages: [33], visualPages: [31] });
+  assert.equal(studio.coverageComplete, false);
+  const pageCoverage = studio.pageCoverage ?? [];
+  assert.deepEqual(pageCoverage.map((page) => page.page), [31, 32, 33]);
+  assert.equal(pageCoverage.find((page) => page.page === 31)?.complete, false);
+  assert.match(pageCoverage.find((page) => page.page === 32)?.missing[0] ?? "", /not reported/);
+  assert.match(pageCoverage.find((page) => page.page === 33)?.missing[0] ?? "", /No selectable text/);
 });

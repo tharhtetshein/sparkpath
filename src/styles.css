@@ -1978,6 +1978,12 @@ pre {
 .book-studio-sparse svg { flex: 0 0 auto; color: var(--green); }
 .book-studio-sparse p { margin: 5px 0 0; color: var(--muted); }
 .book-studio-sparse button { margin-top: 12px; padding: 7px 10px; border: 1px solid var(--course-navy); background: transparent; color: var(--course-navy); font-weight: 800; }
+.book-coverage { padding: 17px 22px; border-top: 1px solid #d8cbb5; font-size: .83rem; }
+.book-coverage.complete { background: #e7f1e6; color: #284f3c; }
+.book-coverage.incomplete { background: #f8e7df; color: #694033; }
+.book-coverage > div { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; }
+.book-coverage > div span { font-size: .73rem; font-weight: 800; }
+.book-coverage ul { display: grid; gap: 7px; margin: 12px 0 0; padding-left: 20px; line-height: 1.48; }
 .book-studio-pending { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 24px; border: 1px dashed var(--course-coral); background: #f5e9d6; }
 .book-studio-pending h3 { margin: 5px 0 7px; }
 .book-studio-pending p:last-child { margin: 0; color: var(--muted); }

@@ -6,22 +6,41 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const DB_NAME = "sparkpath-books-v1";
 const STORE_NAME = "sections";
+const IMAGE_OPERATOR_NAMES = [
+  "paintImageXObject",
+  "paintInlineImageXObject",
+  "paintImageMaskXObject",
+  "paintImageMaskXObjectGroup",
+  "paintImageXObjectRepeat",
+];
 
-export async function extractBookPages(file: File): Promise<string[]> {
+export type ExtractedBookPages = { pages: string[]; imagePages: number[] };
+
+export async function extractBookPages(file: File): Promise<ExtractedBookPages> {
   if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
     throw new Error("Choose a PDF book.");
   }
   const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   const pages: string[] = [];
+  const imagePages: number[] = [];
+  const imageOperatorCodes = new Set(IMAGE_OPERATOR_NAMES
+    .map((name) => (pdfjs.OPS as unknown as Record<string, number>)[name])
+    .filter((code): code is number => typeof code === "number"));
   for (let number = 1; number <= pdf.numPages; number += 1) {
     const page = await pdf.getPage(number);
     const content = await page.getTextContent();
     pages.push(content.items.map((item) => "str" in item ? item.str : "").join(" ").replace(/\s+/g, " ").trim());
+    try {
+      const operatorList = await page.getOperatorList();
+      if (operatorList.fnArray.some((operator) => imageOperatorCodes.has(operator))) imagePages.push(number);
+    } catch {
+      imagePages.push(number);
+    }
   }
   if (pages.join("").length < 200) {
     throw new Error("This PDF has too little selectable text. Please use a text-based or OCR-processed PDF.");
   }
-  return pages;
+  return { pages, imagePages };
 }
 
 function openBookDb(): Promise<IDBDatabase> {

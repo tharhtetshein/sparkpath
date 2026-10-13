@@ -17,6 +17,8 @@ export function BookStudyLab({ studio, pageStart, pageEnd, onRetry, retryBusy = 
   const concept = studio.concepts[activeConcept];
   const step = studio.steps[activeStep];
   const check = studio.check[0];
+  const pageCoverage = studio.pageCoverage ?? [];
+  const coverageComplete = studio.coverageComplete === true;
   const hasActivity = studio.concepts.length || studio.steps.length || check;
 
   return (
@@ -34,8 +36,8 @@ export function BookStudyLab({ studio, pageStart, pageEnd, onRetry, retryBusy = 
         <div className="book-studio-sparse">
           <BookOpen size={26} />
           <div>
-            <strong>{studio.emptyReason === "source_check" ? "This activity could not be verified against the PDF." : "This section is mainly front matter or a short transition."}</strong>
-            <p>{studio.emptyReason === "source_check" ? "The full lesson is below. You can try building the study tools again." : "Read the notes below, or move on to the next section."}</p>
+            <strong>{studio.emptyReason === "source_check" ? "This activity could not be verified against the PDF." : studio.emptyReason === "visual_content" ? "This section contains pages the text reader could not inspect." : "This section is mainly front matter or a short transition."}</strong>
+            <p>{studio.emptyReason === "source_check" ? "The full lesson is below. You can try building the study tools again." : studio.emptyReason === "visual_content" ? "Scanned pages or embedded figures are listed in the page coverage notes. OCR processing is needed to include their contents." : "Read the notes below, or move on to the next section."}</p>
             {studio.emptyReason === "source_check" && onRetry && <button type="button" disabled={retryBusy} onClick={onRetry}>{retryBusy ? "Checking again..." : "Try again"}</button>}
           </div>
         </div>
@@ -105,6 +107,20 @@ export function BookStudyLab({ studio, pageStart, pageEnd, onRetry, retryBusy = 
             </div>
           )}
         </div>
+      )}
+
+      {!!pageCoverage.length && (
+        <aside className={`book-coverage ${coverageComplete ? "complete" : "incomplete"}`} aria-live="polite">
+          <div><strong>{coverageComplete ? "Page coverage checked" : "Some page content needs review"}</strong><span>{pageCoverage.filter((page) => page.complete).length}/{pageCoverage.length} PDF pages covered</span></div>
+          {!coverageComplete && (
+            <ul>
+              {pageCoverage.filter((page) => !page.complete).slice(0, 6).map((page) => (
+                <li key={page.page}><strong>PDF page {page.page}</strong> {page.missing.join(" ") || "Coverage was not confirmed."}</li>
+              ))}
+              {pageCoverage.filter((page) => !page.complete).length > 6 && <li>More pages need review in this section.</li>}
+            </ul>
+          )}
+        </aside>
       )}
     </section>
   );

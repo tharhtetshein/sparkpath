@@ -2864,9 +2864,6 @@ function CoursesPage(props: {
               </div>
               <h2>{activeLesson.title}</h2>
               <p className="lesson-summary">{activeCourse.kind === "book" ? `Explore the ideas from PDF pages ${activeLesson.pageStart}–${activeLesson.pageEnd}, then study the full explanation or continue at your own pace.` : activeLesson.summary}</p>
-              {activeCourse.kind === "book" && !!activeCourse.unreadablePages?.length && (
-                <p className="book-text-warning">{activeCourse.unreadablePages.length} PDF page{activeCourse.unreadablePages.length === 1 ? "" : "s"} had no selectable text ({activeCourse.unreadablePages.slice(0, 12).join(", ")}{activeCourse.unreadablePages.length > 12 ? ", …" : ""}). If those pages contain content, import an OCR-processed PDF for complete coverage.</p>
-              )}
               {activeCourse.kind === "book" && !activeCourse.sourcePdfStored && (
                 <p className="book-text-warning">Original PDF pages are unavailable for this saved book. Reimport its PDF to show the page images inside each section.</p>
               )}

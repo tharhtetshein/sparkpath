@@ -185,7 +185,7 @@ export function applyBookStudioAudit(studio: BookStudio, response: string, flags
     const missing = Array.isArray(report?.missing) ? report.missing.map((item: unknown) => compact(item, 220)).filter(Boolean).slice(0, 8) : [];
     if (!report) missing.push("This page was not reported by the coverage audit.");
     const visualUnverified = visualPages.includes(page);
-    if (visualUnverified) missing.push("A figure or embedded image on this page was not included in the text coverage check.");
+    if (visualUnverified) missing.push("Review the original PDF page shown above; its visual content was not verified against the lesson text.");
     const complete = report?.complete === true && !missing.length && !unreadablePages.includes(page);
     return { page, complete, missing };
   });

@@ -37,7 +37,7 @@ export function BookStudyLab({ studio, pageStart, pageEnd, onRetry, retryBusy = 
           <BookOpen size={26} />
           <div>
             <strong>{studio.emptyReason === "source_check" ? "This activity could not be verified against the PDF." : studio.emptyReason === "visual_content" ? "This section contains pages the text reader could not inspect." : "This section is mainly front matter or a short transition."}</strong>
-            <p>{studio.emptyReason === "source_check" ? "The full lesson is below. You can try building the study tools again." : studio.emptyReason === "visual_content" ? "Scanned pages or embedded figures are listed in the page coverage notes. OCR processing is needed to include their contents." : "Read the notes below, or move on to the next section."}</p>
+            <p>{studio.emptyReason === "source_check" ? "The full lesson is below. You can try building the study tools again." : studio.emptyReason === "visual_content" ? "The original pages are shown above. Check the flagged page images for text or figures the text reader could not verify." : "Read the notes below, or move on to the next section."}</p>
             {studio.emptyReason === "source_check" && onRetry && <button type="button" disabled={retryBusy} onClick={onRetry}>{retryBusy ? "Checking again..." : "Try again"}</button>}
           </div>
         </div>

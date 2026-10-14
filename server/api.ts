@@ -223,19 +223,35 @@ export function aiApi(env: Record<string, string>) {
       return;
     }
 
-    const apiKey = env.GROQ_API_KEY || process.env.GROQ_API_KEY;
-    const apiUrl = "https://api.groq.com/openai/v1/responses";
-    const model = env.GROQ_MODEL || "openai/gpt-oss-120b";
-    const visionModel = env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b";
-    const researchModel = env.GROQ_RESEARCH_MODEL || model;
-    const maxOutputTokens = positiveInteger(env.GROQ_MAX_OUTPUT_TOKENS, 4000);
-    const researchMaxOutputTokens = positiveInteger(env.GROQ_RESEARCH_MAX_OUTPUT_TOKENS, 5000);
-    const reasoningEffort = normalizeGroqReasoningEffort(env.GROQ_REASONING_EFFORT);
-    const researchReasoningEffort = normalizeGroqReasoningEffort(env.GROQ_RESEARCH_REASONING_EFFORT);
+    const providerSetting = (env.AI_PROVIDER || process.env.AI_PROVIDER || "auto").trim().toLowerCase();
+    const openAiKey = env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+    const groqKey = env.GROQ_API_KEY || process.env.GROQ_API_KEY;
+    const provider = providerSetting === "auto" ? (openAiKey ? "openai" : "groq") : providerSetting;
+    if (provider !== "openai" && provider !== "groq") {
+      response.statusCode = 503;
+      json(response, { error: "AI_PROVIDER must be set to auto, openai, or groq." });
+      return;
+    }
+    const isOpenAi = provider === "openai";
+    const apiKey = isOpenAi ? openAiKey : groqKey;
+    const apiUrl = isOpenAi ? "https://api.openai.com/v1/responses" : "https://api.groq.com/openai/v1/responses";
+    const model = isOpenAi ? (env.OPENAI_MODEL || "gpt-5.4") : (env.GROQ_MODEL || "openai/gpt-oss-120b");
+    const visionModel = isOpenAi ? (env.OPENAI_VISION_MODEL || model) : (env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b");
+    const researchModel = isOpenAi ? (env.OPENAI_RESEARCH_MODEL || model) : (env.GROQ_RESEARCH_MODEL || model);
+    const maxOutputTokens = positiveInteger(isOpenAi ? env.OPENAI_MAX_OUTPUT_TOKENS : env.GROQ_MAX_OUTPUT_TOKENS, 4000);
+    const researchMaxOutputTokens = positiveInteger(isOpenAi ? env.OPENAI_RESEARCH_MAX_OUTPUT_TOKENS : env.GROQ_RESEARCH_MAX_OUTPUT_TOKENS, 5000);
+    const reasoningEffort = isOpenAi
+      ? normalizeOpenAiReasoningEffort(env.OPENAI_REASONING_EFFORT)
+      : normalizeGroqReasoningEffort(env.GROQ_REASONING_EFFORT);
+    const researchReasoningEffort = isOpenAi
+      ? normalizeOpenAiReasoningEffort(env.OPENAI_RESEARCH_REASONING_EFFORT)
+      : normalizeGroqReasoningEffort(env.GROQ_RESEARCH_REASONING_EFFORT);
 
     if (!apiKey) {
       response.statusCode = 503;
-      json(response, { error: "Groq is not configured on this server. Add GROQ_API_KEY to the Render service Environment settings and redeploy." });
+      json(response, { error: isOpenAi
+        ? "OpenAI is selected but not configured. Add a rotated OPENAI_API_KEY to the Render service Environment settings and redeploy."
+        : "Groq is not configured on this server. Add GROQ_API_KEY to the Render service Environment settings and redeploy." });
       return;
     }
 
@@ -253,14 +269,14 @@ export function aiApi(env: Record<string, string>) {
       const hasImage = messages.some((message: any) => Array.isArray(message?.content) && message.content.some((part: any) => part?.type === "image_url"));
       const requestedMaxOutputTokens = boundedPositiveInteger(body.maxOutputTokens, 12000);
       const outputTokenBudget = requestedMaxOutputTokens ?? (webSearch ? researchMaxOutputTokens : maxOutputTokens);
-      const upstream = await callGroqProvider(apiUrl, apiKey, {
+      const upstream = await callAiProvider(apiUrl, apiKey, {
         model: hasImage ? visionModel : webSearch ? researchModel : model,
         instructions: messagesToOpenAiInstructions(messages),
         input: messagesToOpenAiInput(messages),
         max_output_tokens: outputTokenBudget,
         reasoning: { effort: webSearch ? researchReasoningEffort : reasoningEffort },
         ...(webSearch ? {
-          tools: [{ type: "browser_search" as const }],
+          tools: [{ type: (isOpenAi ? "web_search" : "browser_search") as "web_search" | "browser_search" }],
           tool_choice: "required",
         } : {}),
         ...(responseFormat ? { text: responseFormat } : {}),
@@ -268,11 +284,11 @@ export function aiApi(env: Record<string, string>) {
 
       if (!upstream.ok) {
         response.statusCode = upstream.status;
-        json(response, { error: providerErrorMessage(upstream.text, upstream.status, "Groq") });
+        json(response, { error: providerErrorMessage(upstream.text, upstream.status, isOpenAi ? "OpenAI" : "Groq") });
         return;
       }
 
-      const content = parseOpenAiResponseContent(upstream.text, true);
+      const content = parseOpenAiResponseContent(upstream.text, !isOpenAi);
       const sources = webSearch ? parseOpenAiResponseSources(upstream.text) : [];
       json(response, { content, sources });
     } catch (error) {
@@ -282,7 +298,7 @@ export function aiApi(env: Record<string, string>) {
   };
 
   return {
-    name: "groq-api",
+    name: "ai-api",
     handler,
     configureServer(server: import("vite").ViteDevServer) {
       server.middlewares.use("/api/ai", handler);
@@ -290,14 +306,14 @@ export function aiApi(env: Record<string, string>) {
   };
 }
 
-type GroqProviderPayload = {
+type AiProviderPayload = {
   model: string;
   instructions?: string;
   input: OpenAiInputMessage[];
   max_output_tokens: number;
-  reasoning?: { effort: "low" | "medium" | "high" };
+  reasoning?: { effort: "none" | "low" | "medium" | "high" | "xhigh" };
   text?: OpenAiTextFormat;
-  tools?: Array<{ type: "browser_search" }>;
+  tools?: Array<{ type: "browser_search" | "web_search" }>;
   tool_choice?: "required";
 };
 
@@ -325,7 +341,7 @@ type OpenAiInputMessage = {
   content: OpenAiInputContent[];
 };
 
-async function callGroqProvider(apiUrl: string, apiKey: string, payload: GroqProviderPayload): Promise<AiProviderResult> {
+async function callAiProvider(apiUrl: string, apiKey: string, payload: AiProviderPayload): Promise<AiProviderResult> {
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
@@ -1441,6 +1457,10 @@ function boundedPositiveInteger(value: unknown, max: number) {
 
 function normalizeGroqReasoningEffort(value: string | undefined): "low" | "medium" | "high" {
   return value === "medium" || value === "high" ? value : "low";
+}
+
+function normalizeOpenAiReasoningEffort(value: string | undefined): "none" | "low" | "medium" | "high" | "xhigh" {
+  return value === "none" || value === "medium" || value === "high" || value === "xhigh" ? value : "low";
 }
 
 function collectOutputText(value: unknown): string[] {

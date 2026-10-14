@@ -46,12 +46,43 @@ test("uses Groq GPT OSS 120B for ordinary and structured lesson requests", async
   assert.equal(result.upstreamRequests[0].payload.text.format.type, "json_schema");
 });
 
-test("does not fall back to OpenAI when Render lacks GROQ_API_KEY", async () => {
-  const result = await callAi({ OPENAI_API_KEY: "old-openai-key" }, {
+test("does not switch providers when the configured Groq key is missing", async () => {
+  const result = await callAi({ AI_PROVIDER: "groq", OPENAI_API_KEY: "old-openai-key" }, {
     messages: [{ role: "user", content: "Prepare a book section" }],
   });
   assert.equal(result.status, 503);
   assert.match(result.body.error, /GROQ_API_KEY/);
+  assert.equal(result.upstreamRequests.length, 0);
+});
+
+test("uses GPT-5.4 through the OpenAI Responses API with structured outputs", async () => {
+  const result = await callAi({ AI_PROVIDER: "openai", OPENAI_API_KEY: "test-openai-key" }, {
+    messages: [{ role: "system", content: "Teach simply" }, { role: "user", content: "Book section" }],
+    responseFormat: { name: "lesson", schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false } },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.upstreamRequests[0].url, "https://api.openai.com/v1/responses");
+  assert.equal(result.upstreamRequests[0].payload.model, "gpt-5.4");
+  assert.equal(result.upstreamRequests[0].payload.text.format.type, "json_schema");
+});
+
+test("auto-selects OpenAI when its key is configured and supports hosted web search", async () => {
+  const result = await callAi({ OPENAI_API_KEY: "test-openai-key" }, {
+    messages: [{ role: "user", content: "Research this topic" }], webSearch: true,
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.upstreamRequests[0].url, "https://api.openai.com/v1/responses");
+  assert.equal(result.upstreamRequests[0].payload.model, "gpt-5.4");
+  assert.deepEqual(result.upstreamRequests[0].payload.tools, [{ type: "web_search" }]);
+  assert.equal(result.upstreamRequests[0].payload.tool_choice, "required");
+});
+
+test("does not silently fall back when OpenAI is explicitly selected without its key", async () => {
+  const result = await callAi({ AI_PROVIDER: "openai", GROQ_API_KEY: "test-groq-key" }, {
+    messages: [{ role: "user", content: "Prepare a book section" }],
+  });
+  assert.equal(result.status, 503);
+  assert.match(result.body.error, /OPENAI_API_KEY/);
   assert.equal(result.upstreamRequests.length, 0);
 });
 

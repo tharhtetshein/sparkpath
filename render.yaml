@@ -9,6 +9,24 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: AI_PROVIDER
+        value: auto
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5.4
+      - key: OPENAI_RESEARCH_MODEL
+        value: gpt-5.4
+      - key: OPENAI_VISION_MODEL
+        value: gpt-5.4
+      - key: OPENAI_MAX_OUTPUT_TOKENS
+        value: "4000"
+      - key: OPENAI_RESEARCH_MAX_OUTPUT_TOKENS
+        value: "5000"
+      - key: OPENAI_REASONING_EFFORT
+        value: low
+      - key: OPENAI_RESEARCH_REASONING_EFFORT
+        value: low
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL

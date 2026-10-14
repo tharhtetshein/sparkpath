@@ -1221,8 +1221,8 @@ export function App() {
     }
   }
 
-  async function prepareBookLesson(course: GeneratedCourse, lesson: CourseLesson) {
-    if (!lesson.bookSectionId || bookLessonRequestsRef.current.has(lesson.id) || (lesson.content?.researchedAt && (lesson.content.teachingVersion === 4 || lesson.exerciseSubmission || lesson.assessment || lesson.completedAt))) return;
+  async function prepareBookLesson(course: GeneratedCourse, lesson: CourseLesson, forceReexplain = false) {
+    if (!lesson.bookSectionId || bookLessonRequestsRef.current.has(lesson.id) || (!forceReexplain && lesson.content?.researchedAt && (lesson.content.teachingVersion === 4 || lesson.exerciseSubmission || lesson.assessment || lesson.completedAt))) return;
     bookLessonRequestsRef.current.add(lesson.id);
     setBookLessonBusy((current) => ({ ...current, [lesson.id]: true }));
     try {
@@ -1419,7 +1419,7 @@ export function App() {
     }));
   }
 
-  async function openCourseLesson(courseId: string, lessonId: string, markCurrentAsRead = false) {
+  async function openCourseLesson(courseId: string, lessonId: string, markCurrentAsRead = false, forceReexplain = false) {
     const course = courseState.courses.find((item) => item.id === courseId);
     const lesson = course?.modules.flatMap((module) => module.lessons).find((item) => item.id === lessonId);
     if (!course || !lesson) return;
@@ -1448,7 +1448,7 @@ export function App() {
         } : item),
       }));
       if (shouldMarkPrevious) setStatus(`Marked the previous section read. Opening ${lesson.title}.`);
-      await prepareBookLesson(course, lesson);
+      await prepareBookLesson(course, lesson, forceReexplain);
       return;
     }
 
@@ -2734,7 +2734,7 @@ function CoursesPage(props: {
   onSubmitBookAssessment: (courseId: string, lessonId: string, answers: string[]) => Promise<void>;
   onPrepareStudio: (courseId: string, lessonId: string) => Promise<void>;
   onSelectCourse: (courseId: string) => void;
-  onOpenLesson: (courseId: string, lessonId: string, markCurrentAsRead?: boolean) => void;
+  onOpenLesson: (courseId: string, lessonId: string, markCurrentAsRead?: boolean, forceReexplain?: boolean) => void;
   onMarkBookSectionRead: (courseId: string, lessonId: string) => void;
   onToggleComplete: (courseId: string, lessonId: string) => void;
   onSaveExerciseSubmission: (courseId: string, lessonId: string, text: string, imageFile?: File | null) => Promise<void>;
@@ -3065,7 +3065,7 @@ function CoursesPage(props: {
                       </section>
                     )
                   )}
-                  {activeCourse.kind === "book" && <div className="book-full-lesson-heading"><span className="eyebrow">Go deeper</span><h3>The full explanation</h3><p>Read through the teaching notes whenever you want more detail.</p>{activeLesson.content.teachingVersion !== 3 && !activeLesson.exerciseSubmission && !activeLesson.assessment && !activeLesson.completedAt && <button type="button" onClick={() => onOpenLesson(activeCourse.id, activeLesson.id)}><Sparkles size={16} />{activeLesson.content.teachingVersion ? "Explain this for a beginner" : "Expand this saved lecture"}</button>}</div>}
+                  {activeCourse.kind === "book" && <div className="book-full-lesson-heading"><span className="eyebrow">Go deeper</span><h3>The full explanation</h3><p>Read through the teaching notes whenever you want more detail.</p>{!activeLesson.exerciseSubmission && !activeLesson.assessment && !activeLesson.completedAt && <button type="button" disabled={!!bookLessonBusy[activeLesson.id]} onClick={() => onOpenLesson(activeCourse.id, activeLesson.id, false, true)}><Sparkles size={16} />{activeLesson.content.teachingVersion ? "Explain this for a beginner" : "Expand this saved lecture"}</button>}</div>}
                   <p className="lesson-introduction">{lessonDisplayText(activeLesson.content.introduction)}</p>
                   {activeLesson.content.sections.map((section, sectionIndex) => (
                     <section key={section.heading} className={activeCourse.kind === "book" ? "book-lecture-section" : undefined}>

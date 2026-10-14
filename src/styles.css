@@ -84,7 +84,8 @@ button,
   padding: clamp(14px, 2vw, 28px);
 }
 
-.app-frame.right-rail-collapsed { grid-template-columns: minmax(0, 1fr) 62px; }
+.app-frame.right-rail-collapsed { grid-template-columns: minmax(0, 1fr) 52px; }
+.app-frame.courses-mode { grid-template-columns: minmax(0, 1fr); }
 
 .page-surface {
   min-width: 0;
@@ -111,7 +112,7 @@ button,
   box-shadow: 10px 10px 0 var(--yellow);
 }
 
-.right-rail.collapsed { align-items: center; padding: 12px 8px; }
+.right-rail.collapsed { align-items: center; padding: 10px 6px; }
 .right-rail.collapsed .rail-brand { justify-content: center; padding: 0; border: 0; }
 .right-rail.collapsed .rail-brand > span,
 .right-rail.collapsed .rail-brand > div,
@@ -120,7 +121,8 @@ button,
 .right-rail.collapsed .rail-status p,
 .right-rail.collapsed .rail-nav button span { display: none; }
 .right-rail.collapsed .rail-nav { width: 100%; gap: 8px; }
-.right-rail.collapsed .rail-nav button { justify-content: center; width: 44px; min-width: 44px; padding: 0; }
+.right-rail.collapsed .rail-nav button { justify-content: center; width: 38px; min-width: 38px; padding: 0; }
+.right-rail.collapsed .rail-collapse-toggle { min-width: 36px; min-height: 36px; }
 .rail-collapse-toggle { min-width: 38px; min-height: 38px; padding: 0; border-color: var(--line); background: transparent; color: var(--ink); }
 .rail-collapse-toggle:hover,
 .course-panel-toggle:hover { background: #ede3d0; }
@@ -1582,6 +1584,9 @@ pre {
   --course-cream: #fff9e9;
   --course-coral: #df6a4c;
 }
+
+.course-library-home { justify-self: start; min-height: 38px; padding: 0 12px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); font-size: .78rem; }
+.course-library-home:hover { border-color: var(--ink); background: var(--paper-2); color: var(--ink); }
 
 .course-hero {
   min-height: 420px;

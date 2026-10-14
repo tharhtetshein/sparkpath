@@ -1946,9 +1946,11 @@ export function App() {
     }
   }
 
+  const showAppNavigationRail = activeView !== "courses";
+
   return (
     <main className="spark-shell">
-      <div className={`app-frame ${rightRailCollapsed ? "right-rail-collapsed" : ""}`}>
+      <div className={`app-frame ${rightRailCollapsed ? "right-rail-collapsed" : ""} ${activeView === "courses" ? "courses-mode" : ""}`}>
         <section className="page-surface">
           {activeView === "home" ? (
             <DashboardPage
@@ -1990,8 +1992,6 @@ export function App() {
               courses={courseState.courses}
               activeCourse={activeCourse}
               activeLesson={activeLesson}
-              rightRailCollapsed={rightRailCollapsed}
-              onToggleRightRail={() => setRightRailCollapsed((collapsed) => !collapsed)}
               topic={courseTopic}
               level={courseLevel}
               depth={courseDepth}
@@ -2016,6 +2016,7 @@ export function App() {
               onToggleComplete={toggleLessonComplete}
               onSaveExerciseSubmission={saveLessonExerciseSubmission}
               onReviewExerciseSubmission={reviewLessonExerciseSubmission}
+              onBackToDashboard={() => setActiveView("home")}
               onBackToLibrary={() => setCourseState((current) => ({ ...current, activeCourseId: "", activeLessonId: "" }))}
             />
           ) : (
@@ -2042,7 +2043,7 @@ export function App() {
           )}
         </section>
 
-        <aside className={`right-rail ${rightRailCollapsed ? "collapsed" : ""}`} aria-label="SparkPath navigation">
+        {showAppNavigationRail && <aside className={`right-rail ${rightRailCollapsed ? "collapsed" : ""}`} aria-label="SparkPath navigation">
           <div className="rail-brand">
             <span><Sparkles size={18} /></span>
             <div>
@@ -2058,7 +2059,7 @@ export function App() {
               <Home size={18} />
               <span>Home</span>
             </button>
-            <button type="button" aria-label="Courses" title="Courses" className={activeView === "courses" ? "active" : ""} onClick={() => setActiveView("courses")}>
+            <button type="button" aria-label="Courses" title="Courses" onClick={() => setActiveView("courses")}>
               <GraduationCap size={18} />
               <span>Courses</span>
             </button>
@@ -2079,7 +2080,7 @@ export function App() {
             <span>{busy || questBusy || skillAnalysisBusy || courseBusy || lessonBusy || Object.keys(bookLessonBusy).length || exerciseReviewBusy || aiBusyJob ? <Loader2 size={16} className="spin" /> : <BadgeCheck size={16} />}</span>
             <p>{status}</p>
           </div>
-        </aside>
+        </aside>}
       </div>
     </main>
   );
@@ -2566,8 +2567,6 @@ function CoursesPage(props: {
   courses: GeneratedCourse[];
   activeCourse?: GeneratedCourse;
   activeLesson?: CourseLesson;
-  rightRailCollapsed: boolean;
-  onToggleRightRail: () => void;
   topic: string;
   level: CourseLevel;
   depth: CourseDepth;
@@ -2592,14 +2591,13 @@ function CoursesPage(props: {
   onToggleComplete: (courseId: string, lessonId: string) => void;
   onSaveExerciseSubmission: (courseId: string, lessonId: string, text: string, imageFile?: File | null) => Promise<void>;
   onReviewExerciseSubmission: (courseId: string, lessonId: string) => Promise<void>;
+  onBackToDashboard: () => void;
   onBackToLibrary: () => void;
 }) {
   const {
     courses,
     activeCourse,
     activeLesson,
-    rightRailCollapsed,
-    onToggleRightRail,
     topic,
     level,
     depth,
@@ -2624,6 +2622,7 @@ function CoursesPage(props: {
     onToggleComplete,
     onSaveExerciseSubmission,
     onReviewExerciseSubmission,
+  onBackToDashboard,
     onBackToLibrary,
   } = props;
   const [exerciseAnswer, setExerciseAnswer] = useState("");
@@ -2650,6 +2649,7 @@ function CoursesPage(props: {
   if (!activeCourse) {
     return (
       <div className="view-stack course-library">
+        <button type="button" className="course-library-home" onClick={onBackToDashboard}><ChevronLeft size={17} />Back to dashboard</button>
         <header className="course-hero">
           <div className="course-hero-copy">
             <p className="eyebrow">AI course studio</p>
@@ -2842,10 +2842,6 @@ function CoursesPage(props: {
                 <button type="button" className="course-panel-toggle" aria-label={outlineCollapsed ? "Expand course outline" : "Collapse course outline"} aria-expanded={!outlineCollapsed} onClick={() => setOutlineCollapsed((collapsed) => !collapsed)}>
                   {outlineCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
                   <span>{outlineCollapsed ? "Show course outline" : "Hide outline"}</span>
-                </button>
-                <button type="button" className="course-panel-toggle" aria-label={rightRailCollapsed ? "Expand app navigation" : "Collapse app navigation"} aria-expanded={!rightRailCollapsed} onClick={onToggleRightRail}>
-                  {rightRailCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}
-                  <span>{rightRailCollapsed ? "Show app navigation" : "Hide app navigation"}</span>
                 </button>
               </div>
               <div className="lesson-meta">

@@ -40,6 +40,7 @@ test("uses Groq GPT OSS 120B for ordinary and structured lesson requests", async
   });
   assert.equal(result.status, 200);
   assert.equal(result.body.content, "Grounded answer");
+  assert.equal(result.body.provider, "groq");
   assert.equal(result.upstreamRequests[0].url, "https://api.groq.com/openai/v1/responses");
   assert.equal(result.upstreamRequests[0].payload.model, "openai/gpt-oss-120b");
   assert.equal(result.upstreamRequests[0].payload.reasoning.effort, "low");
@@ -61,6 +62,7 @@ test("uses GPT-5.4 through the OpenAI Responses API with structured outputs", as
     responseFormat: { name: "lesson", schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false } },
   });
   assert.equal(result.status, 200);
+  assert.equal(result.body.provider, "openai");
   assert.equal(result.upstreamRequests[0].url, "https://api.openai.com/v1/responses");
   assert.equal(result.upstreamRequests[0].payload.model, "gpt-5.4");
   assert.equal(result.upstreamRequests[0].payload.text.format.type, "json_schema");

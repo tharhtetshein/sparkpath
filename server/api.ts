@@ -290,7 +290,7 @@ export function aiApi(env: Record<string, string>) {
 
       const content = parseOpenAiResponseContent(upstream.text, !isOpenAi);
       const sources = webSearch ? parseOpenAiResponseSources(upstream.text) : [];
-      json(response, { content, sources });
+      json(response, { content, sources, provider });
     } catch (error) {
       response.statusCode = 500;
       json(response, { error: error instanceof Error ? error.message : "AI request failed." });

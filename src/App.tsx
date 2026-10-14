@@ -4565,7 +4565,7 @@ function extractJson(content: string) {
   const end = withoutFence.lastIndexOf("}");
   if (start === -1 || end === -1 || end <= start) {
     const preview = withoutFence.slice(0, 180);
-    throw new Error(`AI returned text instead of structured skill data. Check that GROQ_API_KEY is set and the latest deployment is running. Response started with: ${preview || "empty response"}`);
+    throw new Error(`AI returned text instead of structured skill data. Check that OPENAI_API_KEY is set and the latest deployment is running. Response started with: ${preview || "empty response"}`);
   }
   return withoutFence.slice(start, end + 1);
 }

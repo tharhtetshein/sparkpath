@@ -223,35 +223,18 @@ export function aiApi(env: Record<string, string>) {
       return;
     }
 
-    const providerSetting = (env.AI_PROVIDER || process.env.AI_PROVIDER || "auto").trim().toLowerCase();
-    const openAiKey = env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
-    const groqKey = env.GROQ_API_KEY || process.env.GROQ_API_KEY;
-    const provider = providerSetting === "auto" ? (openAiKey ? "openai" : "groq") : providerSetting;
-    if (provider !== "openai" && provider !== "groq") {
-      response.statusCode = 503;
-      json(response, { error: "AI_PROVIDER must be set to auto, openai, or groq." });
-      return;
-    }
-    const isOpenAi = provider === "openai";
-    const apiKey = isOpenAi ? openAiKey : groqKey;
-    const apiUrl = isOpenAi ? "https://api.openai.com/v1/responses" : "https://api.groq.com/openai/v1/responses";
-    const model = isOpenAi ? (env.OPENAI_MODEL || "gpt-5.4") : (env.GROQ_MODEL || "openai/gpt-oss-120b");
-    const visionModel = isOpenAi ? (env.OPENAI_VISION_MODEL || model) : (env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b");
-    const researchModel = isOpenAi ? (env.OPENAI_RESEARCH_MODEL || model) : (env.GROQ_RESEARCH_MODEL || model);
-    const maxOutputTokens = positiveInteger(isOpenAi ? env.OPENAI_MAX_OUTPUT_TOKENS : env.GROQ_MAX_OUTPUT_TOKENS, 4000);
-    const researchMaxOutputTokens = positiveInteger(isOpenAi ? env.OPENAI_RESEARCH_MAX_OUTPUT_TOKENS : env.GROQ_RESEARCH_MAX_OUTPUT_TOKENS, 5000);
-    const reasoningEffort = isOpenAi
-      ? normalizeOpenAiReasoningEffort(env.OPENAI_REASONING_EFFORT)
-      : normalizeGroqReasoningEffort(env.GROQ_REASONING_EFFORT);
-    const researchReasoningEffort = isOpenAi
-      ? normalizeOpenAiReasoningEffort(env.OPENAI_RESEARCH_REASONING_EFFORT)
-      : normalizeGroqReasoningEffort(env.GROQ_RESEARCH_REASONING_EFFORT);
-
+    const apiKey = env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+    const apiUrl = "https://api.openai.com/v1/responses";
+    const model = env.OPENAI_MODEL || "gpt-5.4";
+    const visionModel = env.OPENAI_VISION_MODEL || model;
+    const researchModel = env.OPENAI_RESEARCH_MODEL || model;
+    const maxOutputTokens = positiveInteger(env.OPENAI_MAX_OUTPUT_TOKENS, 4000);
+    const researchMaxOutputTokens = positiveInteger(env.OPENAI_RESEARCH_MAX_OUTPUT_TOKENS, 5000);
+    const reasoningEffort = normalizeOpenAiReasoningEffort(env.OPENAI_REASONING_EFFORT);
+    const researchReasoningEffort = normalizeOpenAiReasoningEffort(env.OPENAI_RESEARCH_REASONING_EFFORT);
     if (!apiKey) {
       response.statusCode = 503;
-      json(response, { error: isOpenAi
-        ? "OpenAI is selected but not configured. Add a rotated OPENAI_API_KEY to the Render service Environment settings and redeploy."
-        : "Groq is not configured on this server. Add GROQ_API_KEY to the Render service Environment settings and redeploy." });
+      json(response, { error: "OpenAI is not configured. Add OPENAI_API_KEY to the Render service Environment settings and redeploy." });
       return;
     }
 
@@ -276,7 +259,7 @@ export function aiApi(env: Record<string, string>) {
         max_output_tokens: outputTokenBudget,
         reasoning: { effort: webSearch ? researchReasoningEffort : reasoningEffort },
         ...(webSearch ? {
-          tools: [{ type: (isOpenAi ? "web_search" : "browser_search") as "web_search" | "browser_search" }],
+          tools: [{ type: "web_search" }],
           tool_choice: "required",
         } : {}),
         ...(responseFormat ? { text: responseFormat } : {}),
@@ -284,13 +267,13 @@ export function aiApi(env: Record<string, string>) {
 
       if (!upstream.ok) {
         response.statusCode = upstream.status;
-        json(response, { error: providerErrorMessage(upstream.text, upstream.status, isOpenAi ? "OpenAI" : "Groq") });
+        json(response, { error: providerErrorMessage(upstream.text, upstream.status, "OpenAI") });
         return;
       }
 
-      const content = parseOpenAiResponseContent(upstream.text, !isOpenAi);
+      const content = parseOpenAiResponseContent(upstream.text);
       const sources = webSearch ? parseOpenAiResponseSources(upstream.text) : [];
-      json(response, { content, sources, provider });
+      json(response, { content, sources, provider: "openai" });
     } catch (error) {
       response.statusCode = 500;
       json(response, { error: error instanceof Error ? error.message : "AI request failed." });
@@ -313,7 +296,7 @@ type AiProviderPayload = {
   max_output_tokens: number;
   reasoning?: { effort: "none" | "low" | "medium" | "high" | "xhigh" };
   text?: OpenAiTextFormat;
-  tools?: Array<{ type: "browser_search" | "web_search" }>;
+  tools?: Array<{ type: "web_search" }>;
   tool_choice?: "required";
 };
 
@@ -1362,16 +1345,9 @@ function normalizeResponseFormat(value: unknown): OpenAiTextFormat | undefined {
   };
 }
 
-function parseOpenAiResponseContent(raw: string, useGroq = false) {
+function parseOpenAiResponseContent(raw: string) {
   const data = JSON.parse(raw);
   if (data?.status === "incomplete") {
-    const completeToolCall = Array.isArray(data.output) && data.output.some((item: any) => item?.type === "mcp_call" && item?.status === "completed");
-    const completedAnswer = Array.isArray(data.output) && data.output
-      .filter((item: any) => item?.type === "message" && item?.status === "completed")
-      .flatMap(collectOutputText).join("\n").trim();
-    if (useGroq && data.incomplete_details?.reason === "tool_required_not_called" && completeToolCall && completedAnswer) {
-      return completedAnswer;
-    }
     throw new Error(openAiEmptyContentMessage(data));
   }
   if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text;
@@ -1385,18 +1361,6 @@ function parseOpenAiResponseContent(raw: string, useGroq = false) {
 function parseOpenAiResponseSources(raw: string) {
   const data = JSON.parse(raw);
   const sources = new Map<string, { title: string; url: string }>();
-
-  if (Array.isArray(data.output)) {
-    data.output.forEach((item: any) => {
-      if (item?.type !== "mcp_call" || item?.name !== "browser.open" || typeof item.output !== "string") return;
-      const lines = item.output.split(/\r?\n/).map((line: string) => line.replace(/^L\d+:\s*/, "").trim());
-      const urlIndex = lines.findIndex((line: string) => /^URL:\s*https?:\/\//i.test(line));
-      if (urlIndex < 0) return;
-      const url = lines[urlIndex].replace(/^URL:\s*/i, "").trim();
-      const title = strip(lines[urlIndex + 1] || sourceHostname(url)).slice(0, 180);
-      sources.set(url, { title, url });
-    });
-  }
 
   function visit(value: unknown) {
     if (!value) return;
@@ -1453,10 +1417,6 @@ function boundedPositiveInteger(value: unknown, max: number) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
   return Math.min(parsed, max);
-}
-
-function normalizeGroqReasoningEffort(value: string | undefined): "low" | "medium" | "high" {
-  return value === "medium" || value === "high" ? value : "low";
 }
 
 function normalizeOpenAiReasoningEffort(value: string | undefined): "none" | "low" | "medium" | "high" | "xhigh" {

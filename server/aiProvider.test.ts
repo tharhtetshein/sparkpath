@@ -33,103 +33,50 @@ async function callAi(env: Record<string, string>, body: AiRequest, upstreamBody
   }
 }
 
-test("uses Groq GPT OSS 120B for ordinary and structured lesson requests", async () => {
-  const result = await callAi({ GROQ_API_KEY: "test-key" }, {
-    messages: [{ role: "system", content: "Teach" }, { role: "user", content: "Section text" }],
-    responseFormat: { name: "lesson", schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false } },
-  });
-  assert.equal(result.status, 200);
-  assert.equal(result.body.content, "Grounded answer");
-  assert.equal(result.body.provider, "groq");
-  assert.equal(result.upstreamRequests[0].url, "https://api.groq.com/openai/v1/responses");
-  assert.equal(result.upstreamRequests[0].payload.model, "openai/gpt-oss-120b");
-  assert.equal(result.upstreamRequests[0].payload.reasoning.effort, "low");
-  assert.equal(result.upstreamRequests[0].payload.text.format.type, "json_schema");
-});
-
-test("does not switch providers when the configured Groq key is missing", async () => {
-  const result = await callAi({ AI_PROVIDER: "groq", OPENAI_API_KEY: "old-openai-key" }, {
-    messages: [{ role: "user", content: "Prepare a book section" }],
-  });
-  assert.equal(result.status, 503);
-  assert.match(result.body.error, /GROQ_API_KEY/);
-  assert.equal(result.upstreamRequests.length, 0);
-});
-
 test("uses GPT-5.4 through the OpenAI Responses API with structured outputs", async () => {
-  const result = await callAi({ AI_PROVIDER: "openai", OPENAI_API_KEY: "test-openai-key" }, {
+  const result = await callAi({ OPENAI_API_KEY: "test-openai-key" }, {
     messages: [{ role: "system", content: "Teach simply" }, { role: "user", content: "Book section" }],
     responseFormat: { name: "lesson", schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false } },
   });
   assert.equal(result.status, 200);
+  assert.equal(result.body.content, "Grounded answer");
   assert.equal(result.body.provider, "openai");
   assert.equal(result.upstreamRequests[0].url, "https://api.openai.com/v1/responses");
   assert.equal(result.upstreamRequests[0].payload.model, "gpt-5.4");
   assert.equal(result.upstreamRequests[0].payload.text.format.type, "json_schema");
 });
 
-test("auto-selects OpenAI when its key is configured and supports hosted web search", async () => {
+test("supports OpenAI hosted web search and returns citation sources", async () => {
   const result = await callAi({ OPENAI_API_KEY: "test-openai-key" }, {
     messages: [{ role: "user", content: "Research this topic" }], webSearch: true,
+  }, {
+    output_text: "Grounded answer",
+    output: [{ type: "message", content: [{ type: "output_text", text: "Grounded answer", annotations: [
+      { type: "url_citation", url: "https://example.org/guide", title: "Example guide" },
+    ] }] }],
   });
   assert.equal(result.status, 200);
   assert.equal(result.upstreamRequests[0].url, "https://api.openai.com/v1/responses");
   assert.equal(result.upstreamRequests[0].payload.model, "gpt-5.4");
   assert.deepEqual(result.upstreamRequests[0].payload.tools, [{ type: "web_search" }]);
   assert.equal(result.upstreamRequests[0].payload.tool_choice, "required");
+  assert.deepEqual(result.body.sources, [{ title: "Example guide", url: "https://example.org/guide" }]);
 });
 
-test("does not silently fall back when OpenAI is explicitly selected without its key", async () => {
-  const result = await callAi({ AI_PROVIDER: "openai", GROQ_API_KEY: "test-groq-key" }, {
+test("routes image input through the configured OpenAI vision model", async () => {
+  const result = await callAi({ OPENAI_API_KEY: "test-openai-key", OPENAI_VISION_MODEL: "gpt-5.4-vision" }, {
+    messages: [{ role: "user", content: [{ type: "text", text: "Review this" }, { type: "image_url", image_url: { url: "data:image/png;base64,YWJj", detail: "auto" } }] }],
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.upstreamRequests[0].payload.model, "gpt-5.4-vision");
+  assert.equal(result.upstreamRequests[0].payload.input[0].content[1].type, "input_image");
+});
+
+test("requires OPENAI_API_KEY before making an upstream request", async () => {
+  const result = await callAi({}, {
     messages: [{ role: "user", content: "Prepare a book section" }],
   });
   assert.equal(result.status, 503);
   assert.match(result.body.error, /OPENAI_API_KEY/);
   assert.equal(result.upstreamRequests.length, 0);
-});
-
-test("uses Groq browser search for researched course requests", async () => {
-  const result = await callAi({ GROQ_API_KEY: "test-key" }, {
-    messages: [{ role: "user", content: "Research this topic" }], webSearch: true,
-  });
-  assert.equal(result.status, 200);
-  assert.deepEqual(result.upstreamRequests[0].payload.tools, [{ type: "browser_search" }]);
-  assert.equal(result.upstreamRequests[0].payload.include, undefined);
-});
-
-test("routes image proof to a Groq vision model", async () => {
-  const result = await callAi({ GROQ_API_KEY: "test-key" }, {
-    messages: [{ role: "user", content: [{ type: "text", text: "Review this" }, { type: "image_url", image_url: { url: "data:image/png;base64,YWJj", detail: "auto" } }] }],
-  });
-  assert.equal(result.status, 200);
-  assert.equal(result.upstreamRequests[0].payload.model, "qwen/qwen3.8-27b");
-});
-
-test("keeps a completed browser-search answer when Groq marks tool use incomplete", async () => {
-  const result = await callAi({ GROQ_API_KEY: "test-key" }, {
-    messages: [{ role: "user", content: "Find a source" }], webSearch: true,
-  }, {
-    status: "incomplete",
-    incomplete_details: { reason: "tool_required_not_called" },
-    output: [
-      { type: "mcp_call", name: "browser.search", status: "completed" },
-      { type: "message", status: "completed", content: [{ type: "output_text", text: "Source found", annotations: [] }] },
-    ],
-  });
-  assert.equal(result.status, 200);
-  assert.equal(result.body.content, "Source found");
-});
-
-test("returns source links from Groq browser open results", async () => {
-  const result = await callAi({ GROQ_API_KEY: "test-key" }, {
-    messages: [{ role: "user", content: "Find a source" }], webSearch: true,
-  }, {
-    status: "completed",
-    output: [
-      { type: "mcp_call", name: "browser.open", status: "completed", output: "L0: \nL1: URL: https://example.org/guide\nL2: Example guide\nL3: Content" },
-      { type: "message", status: "completed", content: [{ type: "output_text", text: "Source found" }] },
-    ],
-  });
-  assert.equal(result.status, 200);
-  assert.deepEqual(result.body.sources, [{ title: "Example guide", url: "https://example.org/guide" }]);
 });

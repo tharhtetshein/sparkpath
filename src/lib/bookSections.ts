@@ -3,6 +3,18 @@ export type BookSection = {
   pageStart: number;
   pageEnd: number;
   text: string;
+  codeBlocks?: BookCodeBlock[];
+};
+
+export type BookCodeBlock = {
+  id: string;
+  page: number;
+  language: string;
+  code: string;
+  symbols: string[];
+  definedSymbols: string[];
+  startsNearTop: boolean;
+  endsNearBottom: boolean;
 };
 
 export type BookMapEntry = {
@@ -115,6 +127,45 @@ export function findRelevantBookSections(query: string, sections: BookSection[],
   return scored.sort((a, b) => b.score - a.score || b.index - a.index).slice(0, limit).map((item) => item.section);
 }
 
+const codeKeywords = new Set(["and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "false", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nn", "none", "nonlocal", "not", "np", "numpy", "or", "pass", "raise", "return", "self", "super", "torch", "true", "try", "while", "with", "yield"]);
+
+export function findRelevantBookCodeBlocks(query: string, currentBlocks: BookCodeBlock[], previousSections: BookSection[], currentPageStart?: number, limit = 3): BookCodeBlock[] {
+  const currentSymbols = new Set((query.match(/[A-Za-z_]\w{2,}/g) ?? []).map((symbol) => symbol.toLowerCase()).filter((symbol) => !codeKeywords.has(symbol)));
+  currentBlocks.forEach((block) => block.symbols.forEach((symbol) => currentSymbols.add(symbol.toLowerCase())));
+  const candidates = new Map<string, BookCodeBlock>();
+  previousSections.forEach((section) => section.codeBlocks?.forEach((block) => candidates.set(block.id, block)));
+  const ranked = [...candidates.values()].map((block, index) => {
+    let score = 0;
+    block.definedSymbols.forEach((symbol) => { if (currentSymbols.has(symbol.toLowerCase())) score += 6; });
+    block.symbols.forEach((symbol) => { if (currentSymbols.has(symbol.toLowerCase())) score += 1; });
+    if (currentPageStart && block.page === currentPageStart - 1 && block.endsNearBottom && currentBlocks.some((current) => current.startsNearTop)) score += 10;
+    return { block, index, score };
+  }).filter((item) => item.score > 0);
+  return ranked.sort((a, b) => b.score - a.score || b.block.page - a.block.page || a.index - b.index).slice(0, limit).map((item) => item.block);
+}
+
+export function formatBookCodeContext(blocks: BookCodeBlock[], maxChars = 6000, relatedBlocks: BookCodeBlock[] = []): string {
+  const unique = [...new Map(blocks.map((block) => [block.id, block])).values()].sort((a, b) => a.page - b.page);
+  const allBlocks = [...unique, ...relatedBlocks].sort((a, b) => a.page - b.page);
+  let output = "";
+  for (const [index, block] of unique.entries()) {
+    const blockIndex = allBlocks.findIndex((candidate) => candidate.id === block.id);
+    const previous = allBlocks[blockIndex - 1];
+    const next = allBlocks[blockIndex + 1];
+    const mayContinue = (block.endsNearBottom && next?.page === block.page + 1 && next.startsNearTop)
+      || (block.startsNearTop && previous?.page === block.page - 1 && previous.endsNearBottom);
+    const definitions = block.definedSymbols.length ? `; defines ${block.definedSymbols.slice(0, 8).join(", ")}` : "";
+    const edge = mayContinue ? "; likely continues across adjacent page" : block.endsNearBottom ? "; reaches bottom of page" : block.startsNearTop ? "; starts near top of page" : "";
+    const header = `[PDF page ${block.page}; ${block.language}${definitions}${edge}]\n`;
+    const remaining = maxChars - output.length - header.length;
+    if (remaining <= 0) break;
+    const code = block.code.length > remaining ? `${block.code.slice(0, Math.max(0, remaining - 45))}\n[code excerpt shortened]` : block.code;
+    output += `${output ? "\n\n" : ""}${header}${code}`;
+    if (code.length < block.code.length || output.length >= maxChars) break;
+  }
+  return output;
+}
+
 export function selectRelevantBookPassage(source: string, query: string, maxChars = 1100): string {
   const queryWords = searchWords(query);
   const pages = [...source.matchAll(/\[PDF page (\d+)\]([\s\S]*?)(?=\[PDF page \d+\]|$)/g)];
@@ -159,14 +210,20 @@ export function bookResumeLessonId(
   return [...lessons].reverse().find((lesson) => lesson.content?.researchedAt)?.id ?? lessons[0]?.id ?? "";
 }
 
-export function splitBookIntoSections(pages: string[]): BookSection[] {
+export function splitBookIntoSections(pages: string[], codeBlocks: BookCodeBlock[] = []): BookSection[] {
   const sections: BookSection[] = [];
   let text = "";
   let start = 1;
   let end = 1;
   const flush = () => {
     if (!text.trim()) return;
-    sections.push({ id: crypto.randomUUID(), pageStart: start, pageEnd: end, text: text.trim() });
+    sections.push({
+      id: crypto.randomUUID(),
+      pageStart: start,
+      pageEnd: end,
+      text: text.trim(),
+      ...(codeBlocks.some((block) => block.page >= start && block.page <= end) ? { codeBlocks: codeBlocks.filter((block) => block.page >= start && block.page <= end) } : {}),
+    });
     text = "";
   };
   pages.forEach((page, pageIndex) => {

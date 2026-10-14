@@ -2307,6 +2307,20 @@ pre {
 .book-source-grid img { display: block; width: 100%; height: auto; background: white; }
 .book-source-grid figcaption { padding: 8px 11px; border-top: 1px solid #e5dac7; color: var(--muted); font-size: .74rem; font-weight: 800; }
 .book-source-error { margin: 0; color: #714432; font-size: .85rem; line-height: 1.55; }
+.book-code-context { margin: 22px 0 30px; padding: 19px; border: 1px solid #172f3b; background: #edf1eb; }
+.book-code-context > header,
+.book-code-context > header > div { display: flex; align-items: center; gap: 11px; }
+.book-code-context > header { justify-content: space-between; margin-bottom: 15px; }
+.book-code-context > header > div > svg { color: var(--course-coral); }
+.book-code-context .eyebrow { margin: 0; font-size: .64rem; }
+.book-code-context h3 { margin: 2px 0 0; font-family: "Fraunces", serif; font-size: 1.4rem; }
+.book-code-context h4 { margin: 15px 0 8px; color: #344d55; font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
+.book-code-loading { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: .75rem; }
+.book-code-snippet { margin-top: 7px; border: 1px solid #283e44; background: #172f3b; color: #fff9e9; }
+.book-code-snippet summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; padding: 10px 13px; cursor: pointer; font-size: .75rem; font-weight: 800; }
+.book-code-snippet summary small { color: #c8d6cf; font-weight: 600; }
+.book-code-snippet pre { max-height: 420px; overflow: auto; margin: 0; padding: 13px 15px; border-top: 1px solid rgba(255, 249, 233, .18); background: #10242c; color: #eff4e9; font: .76rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; }
+.book-code-snippet code { white-space: pre; }
 
 .lesson-video {
   display: grid;

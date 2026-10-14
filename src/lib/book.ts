@@ -1,6 +1,7 @@
 import * as pdfjs from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
-import { BookSection } from "./bookSections";
+import { extractPageCodeBlocks } from "./bookCode";
+import { BookCodeBlock, BookSection } from "./bookSections";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -17,7 +18,7 @@ const IMAGE_OPERATOR_NAMES = [
   "paintImageXObjectRepeat",
 ];
 
-export type ExtractedBookPages = { pages: string[]; imagePages: number[] };
+export type ExtractedBookPages = { pages: string[]; imagePages: number[]; codeBlocks: BookCodeBlock[] };
 
 export async function extractBookPages(file: File): Promise<ExtractedBookPages> {
   if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
@@ -27,6 +28,7 @@ export async function extractBookPages(file: File): Promise<ExtractedBookPages> 
   const pdf = await loadingTask.promise;
   const pages: string[] = [];
   const imagePages: number[] = [];
+  const codeBlocks: BookCodeBlock[] = [];
   const imageOperatorCodes = new Set(IMAGE_OPERATOR_NAMES
     .map((name) => (pdfjs.OPS as unknown as Record<string, number>)[name])
     .filter((code): code is number => typeof code === "number"));
@@ -34,6 +36,7 @@ export async function extractBookPages(file: File): Promise<ExtractedBookPages> 
     const page = await pdf.getPage(number);
     const content = await page.getTextContent();
     pages.push(content.items.map((item) => "str" in item ? item.str : "").join(" ").replace(/\s+/g, " ").trim());
+    codeBlocks.push(...extractPageCodeBlocks(number, content.items, content.styles, page.getViewport({ scale: 1 }).height));
     try {
       const operatorList = await page.getOperatorList();
       if (operatorList.fnArray.some((operator) => imageOperatorCodes.has(operator))) imagePages.push(number);
@@ -45,7 +48,7 @@ export async function extractBookPages(file: File): Promise<ExtractedBookPages> 
   if (pages.join("").length < 200) {
     throw new Error("This PDF has too little selectable text. Please use a text-based or OCR-processed PDF.");
   }
-  return { pages, imagePages };
+  return { pages, imagePages, codeBlocks };
 }
 
 function openBookDb(): Promise<IDBDatabase> {

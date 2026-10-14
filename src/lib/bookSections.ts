@@ -5,7 +5,147 @@ export type BookSection = {
   text: string;
 };
 
+export type BookMapEntry = {
+  number: number;
+  title: string;
+  printedPage: number;
+  pdfPage?: number;
+  part?: string;
+};
+
 export const MAX_SECTION_CHARS = 4500;
+
+const searchStopWords = new Set([
+  "about", "after", "again", "also", "been", "being", "book", "could", "does", "from", "have", "into", "just", "more", "most", "only", "other", "over", "section", "should", "some", "than", "that", "their", "them", "there", "these", "they", "this", "those", "through", "under", "very", "what", "when", "where", "which", "while", "with", "would",
+]);
+
+function searchWords(value: string): Set<string> {
+  return new Set(value.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu)?.filter((word) => !searchStopWords.has(word)) ?? []);
+}
+
+export function buildBookMap(pages: string[]): BookMapEntry[] {
+  const searchEnd = Math.min(pages.length, Math.max(24, Math.ceil(pages.length * 0.12)));
+  const tocPage = pages.slice(0, searchEnd).findIndex((page) => /\btable\s+of\s+contents\b|\bcontents\b/i.test(page));
+  if (tocPage < 0) return [];
+
+  const chapterPattern = /(?:^|\s)(\d{1,2})\.\s+([A-Z][^.!?]{4,90})\.(?:\s*\.){2,}\s*(\d{1,3})\b/g;
+  const compactChapterPattern = /(?:^|\s)(\d{1,2})\.\s+([A-Z][^.!?]{4,140})\.\s+(\d{1,3})(?=\s|$)/g;
+  const partPattern = /\bPart\s+([IVXLCDM]+)\.\s+([A-Z][^.!?]{4,90})/g;
+  const entries: BookMapEntry[] = [];
+  let activePart = "";
+  const tocEnd = Math.min(pages.length, tocPage + 16);
+  for (const page of pages.slice(tocPage, tocEnd)) {
+    const chapterMatches = [
+      ...[...page.matchAll(chapterPattern)],
+      ...[...page.matchAll(compactChapterPattern)],
+    ].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    const structureMatches = [
+      ...[...page.matchAll(partPattern)].map((match) => ({ kind: "part" as const, match, index: match.index ?? 0 })),
+      ...chapterMatches.map((match) => ({ kind: "chapter" as const, match, index: match.index ?? 0 })),
+    ].sort((a, b) => a.index - b.index);
+    for (const { kind, match } of structureMatches) {
+      if (kind === "part") {
+        activePart = `Part ${match[1]}: ${match[2].replace(/\s+\d{1,3}$/, "").trim()}`;
+        continue;
+      }
+      const number = Number(match[1]);
+      const title = match[2].replace(/\s+/g, " ").trim();
+      const printedPage = Number(match[3]);
+      if (!title || entries.some((entry) => entry.number === number)) continue;
+      entries.push({ number, title, printedPage, ...(activePart ? { part: activePart } : {}) });
+    }
+  }
+  const ordered = entries.sort((a, b) => a.printedPage - b.printedPage).slice(0, 48);
+  const actualContentStart = tocPage + 1;
+  return ordered.map((entry) => {
+    const expectedHeading = `chapter ${entry.number} ${entry.title}`.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const headingPage = pages.findIndex((page, pageIndex) => {
+      if (pageIndex < actualContentStart) return false;
+      const chapterMatch = /\bchapter\s+(\d+)\b/i.exec(page);
+      if (!chapterMatch || Number(chapterMatch[1]) !== entry.number || (chapterMatch.index ?? Infinity) > 700) return false;
+      const heading = page.slice(chapterMatch.index, chapterMatch.index + 300).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+      return heading.startsWith(expectedHeading);
+    });
+    return headingPage < 0 ? entry : { ...entry, pdfPage: headingPage + 1 };
+  });
+}
+
+export function bookMapContext(entries: BookMapEntry[], chapterTitle?: string): string {
+  if (!entries.length) return "";
+  const current = chapterTitle?.trim().toLowerCase();
+  return entries.map((entry) =>
+    `${entry.part ? `${entry.part} · ` : ""}Chapter ${entry.number}: ${entry.title} (printed page ${entry.printedPage}${entry.pdfPage ? `; PDF page ${entry.pdfPage}` : ""})${current === entry.title.toLowerCase() ? " ← current section" : ""}`,
+  ).join("\n").slice(0, 5000);
+}
+
+export function mapBookSectionsToChapters(sections: BookSection[], entries: BookMapEntry[]): string[] {
+  let currentTitle = "Opening pages";
+  return sections.map((section) => {
+    const source = section.text.toLowerCase();
+    const physicalMatch = entries.find((entry) => entry.pdfPage && entry.pdfPage >= section.pageStart && entry.pdfPage <= section.pageEnd);
+    if (physicalMatch) currentTitle = physicalMatch.title;
+    if (physicalMatch || /\btable\s+of\s+contents\b/i.test(source)) return currentTitle;
+    const opening = source.slice(0, 260);
+    const matches = entries.filter((entry) => opening.includes(entry.title.toLowerCase()));
+    if (matches.length === 1) currentTitle = matches[0].title;
+    return currentTitle;
+  });
+}
+
+export function findRelevantBookSections(query: string, sections: BookSection[], limit = 2): BookSection[] {
+  if (!sections.length || limit < 1) return [];
+  const queryWords = searchWords(query);
+  if (!queryWords.size) return sections.slice(-limit).reverse();
+  const documentFrequency = new Map<string, number>();
+  const indexed = sections.map((section) => {
+    const words = searchWords(section.text);
+    words.forEach((word) => documentFrequency.set(word, (documentFrequency.get(word) ?? 0) + 1));
+    return { section, words };
+  });
+  const scored = indexed.map(({ section, words }, index) => {
+    let score = 0;
+    queryWords.forEach((word) => {
+      if (!words.has(word)) return;
+      const frequency = documentFrequency.get(word) ?? 1;
+      score += Math.log(1 + sections.length / frequency);
+    });
+    return { section, score, index };
+  }).filter((item) => item.score > 0);
+  if (!scored.length) return sections.slice(-limit).reverse();
+  return scored.sort((a, b) => b.score - a.score || b.index - a.index).slice(0, limit).map((item) => item.section);
+}
+
+export function selectRelevantBookPassage(source: string, query: string, maxChars = 1100): string {
+  const queryWords = searchWords(query);
+  const pages = [...source.matchAll(/\[PDF page (\d+)\]([\s\S]*?)(?=\[PDF page \d+\]|$)/g)];
+  const sentences = pages.flatMap((page) => {
+    const pageNumber = page[1];
+    const body = page[2].trim();
+    const parts = body.match(/[^.!?]+[.!?]?/g) ?? [body];
+    return parts.map((sentence, index) => {
+      const clean = sentence.replace(/\s+/g, " ").trim();
+      const words = searchWords(clean);
+      let score = 0;
+      queryWords.forEach((word) => { if (words.has(word)) score += 1; });
+      return { pageNumber, clean, score, order: Number(page.index) + index / 1000 };
+    }).filter((item) => item.clean);
+  });
+  const selected = queryWords.size
+    ? sentences.filter((sentence) => sentence.score > 0).sort((a, b) => b.score - a.score || a.order - b.order).slice(0, 5).sort((a, b) => a.order - b.order)
+    : [];
+  const candidates = selected.length ? selected : sentences.slice(0, 5);
+  let output = "";
+  let currentPage = "";
+  for (const sentence of candidates) {
+    const prefix = sentence.pageNumber === currentPage ? "" : `${output ? "\n" : ""}[PDF page ${sentence.pageNumber}] `;
+    const remaining = maxChars - output.length - prefix.length;
+    if (remaining <= 0) break;
+    output += prefix + sentence.clean.slice(0, remaining);
+    currentPage = sentence.pageNumber;
+    if (output.length >= maxChars) break;
+  }
+  return output;
+}
 
 export function bookResumeLessonId(
   course: { id: string; lastOpenedLessonId?: string; modules: Array<{ lessons: Array<{ id: string; content?: { researchedAt?: string } }> }> },

@@ -7,6 +7,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 const DB_NAME = "sparkpath-books-v1";
 const STORE_NAME = "sections";
 const PDF_STORE_NAME = "source-pdfs";
+const MAX_CACHED_BOOK_SECTIONS = 2000;
+const bookSectionCache = new Map<string, BookSection>();
 const IMAGE_OPERATOR_NAMES = [
   "paintImageXObject",
   "paintInlineImageXObject",
@@ -117,6 +119,7 @@ export async function loadBookPageImages(bookId: string, pageStart: number, page
 }
 
 export async function saveBookSections(sections: BookSection[]): Promise<void> {
+  if (bookSectionCache.size + sections.length > MAX_CACHED_BOOK_SECTIONS) bookSectionCache.clear();
   const db = await openBookDb();
   try {
     await new Promise<void>((resolve, reject) => {
@@ -127,20 +130,57 @@ export async function saveBookSections(sections: BookSection[]): Promise<void> {
       transaction.onerror = () => reject(transaction.error ?? new Error("Could not save the book."));
       transaction.onabort = () => reject(transaction.error ?? new Error("Could not save the book."));
     });
+    sections.forEach((section) => bookSectionCache.set(section.id, section));
   } finally {
     db.close();
   }
 }
 
 export async function loadBookSection(id: string): Promise<BookSection> {
-  const db = await openBookDb();
-  try {
-    return await new Promise<BookSection>((resolve, reject) => {
-      const request = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(id);
-      request.onsuccess = () => request.result ? resolve(request.result as BookSection) : reject(new Error("Book text is missing from this browser. Reimport the PDF to continue."));
-      request.onerror = () => reject(request.error ?? new Error("Could not load the book section."));
-    });
-  } finally {
-    db.close();
+  const cached = bookSectionCache.get(id);
+  if (cached) return cached;
+  const loaded = (await loadBookSections([id]))[0];
+  if (!loaded) throw new Error("Book text is missing from this browser. Reimport the PDF to continue.");
+  return loaded;
+}
+
+export async function loadBookSections(ids: string[]): Promise<BookSection[]> {
+  if (!ids.length) return [];
+  const uniqueIds = [...new Set(ids)];
+  const cached = new Map<string, BookSection>();
+  uniqueIds.forEach((id) => {
+    const section = bookSectionCache.get(id);
+    if (section) cached.set(id, section);
+  });
+  const missingIds = uniqueIds.filter((id) => !cached.has(id));
+  if (missingIds.length) {
+    const db = await openBookDb();
+    try {
+      const loaded = await new Promise<Map<string, BookSection>>((resolve, reject) => {
+        const transaction = db.transaction(STORE_NAME, "readonly");
+        const store = transaction.objectStore(STORE_NAME);
+        const results = new Map<string, BookSection>();
+        missingIds.forEach((id) => {
+          const request = store.get(id);
+          request.onsuccess = () => {
+            if (request.result) results.set(id, request.result as BookSection);
+          };
+        });
+        transaction.oncomplete = () => resolve(results);
+        transaction.onerror = () => reject(transaction.error ?? new Error("Could not load the book sections."));
+        transaction.onabort = () => reject(transaction.error ?? new Error("Could not load the book sections."));
+      });
+      if (bookSectionCache.size + loaded.size > MAX_CACHED_BOOK_SECTIONS) bookSectionCache.clear();
+      loaded.forEach((section, id) => {
+        cached.set(id, section);
+        bookSectionCache.set(id, section);
+      });
+    } finally {
+      db.close();
+    }
   }
+  return uniqueIds.flatMap((id) => {
+    const section = cached.get(id) ?? bookSectionCache.get(id);
+    return section ? [section] : [];
+  });
 }
